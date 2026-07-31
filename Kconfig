@@ -1,0 +1,122 @@
+menu "configure app (bmo_desktop_avatar) "
+
+config TUYA_PRODUCT_ID
+    string "product ID of project"
+    default "your_product_id_here"
+
+# Keep the license out of tracked files: fill these in the gitignored app_default.config
+# or config/TUYA_T5AI_CORE.config, never in a .example template. Leaving them empty makes
+# the firmware use the license flashed by `tos.py auth` instead.
+config TUYA_OPENSDK_UUID
+    string "TuyaOpen license UUID (empty = use the license stored in flash)"
+    default ""
+
+config TUYA_OPENSDK_AUTHKEY
+    string "TuyaOpen license authkey (empty = use the license stored in flash)"
+    default ""
+
+config ENABLE_BATTERY
+    bool "enable the battery module"
+    default n
+
+config APP_NEED_AI_COMPONENTS
+    bool
+    default y
+    select ENABLE_AI_COMPONENTS
+rsource "src/display2/Kconfig"
+
+config UI_LANDSCAPE
+    bool "Landscape UI (400x300 logical, panel sideways)"
+    default y
+
+config UI_LANDSCAPE_TEST
+    bool "Show corner digit test on boot (landscape verify)"
+    default n
+    depends on UI_LANDSCAPE
+
+config ENABLE_BMO_BUTTONS
+    bool "Enable BMO button panel (9 extra GPIO keys)"
+    default y
+
+config BMO_BTN_UP
+    int "D-pad UP pin"
+    default 4
+    range 0 63
+    depends on ENABLE_BMO_BUTTONS
+
+config BMO_BTN_DOWN
+    int "D-pad DOWN pin"
+    default 5
+    range 0 63
+    depends on ENABLE_BMO_BUTTONS
+
+config BMO_BTN_LEFT
+    int "D-pad LEFT pin"
+    default 7
+    range 0 63
+    depends on ENABLE_BMO_BUTTONS
+
+config BMO_BTN_RIGHT
+    int "D-pad RIGHT pin"
+    default 8
+    range 0 63
+    depends on ENABLE_BMO_BUTTONS
+
+config BMO_BTN_MID
+    int "D-pad centre pin (refresh weather/calendar)"
+    default 22
+    range 0 63
+    depends on ENABLE_BMO_BUTTONS
+
+config BMO_BTN_SW1
+    int "Module aux key 1 pin (mute toggle)"
+    default 23
+    range 0 63
+    depends on ENABLE_BMO_BUTTONS
+
+config BMO_BTN_SW2
+    int "Module aux key 2 pin (system info)"
+    default 25
+    range 0 63
+    depends on ENABLE_BMO_BUTTONS
+
+config BMO_BTN_TRI
+    int "Blue triangle pin (home)"
+    default 26
+    range 0 63
+    depends on ENABLE_BMO_BUTTONS
+
+config BMO_BTN_GREEN
+    int "Green circle pin (refresh/easter egg)"
+    default 19
+    range 0 63
+    depends on ENABLE_BMO_BUTTONS
+
+config ENABLE_MOTION_ENGINE
+    bool "Enable dual-arm servo motion engine"
+    default y
+
+config SERVO_LEFT_PWM
+    int "Left arm PWM channel (TUYA_PWM_NUM_*)"
+    default 0
+    range 0 11
+    depends on ENABLE_MOTION_ENGINE
+
+config SERVO_RIGHT_PWM
+    int "Right arm PWM channel (TUYA_PWM_NUM_*, P24=1 not 4)"
+    default 1
+    range 0 11
+    depends on ENABLE_MOTION_ENGINE
+
+config ENABLE_SERVO_TEST
+    bool "Run right-arm servo diagnostic sweep on boot"
+    default n
+    depends on ENABLE_MOTION_ENGINE
+
+config SERVO_TEST_PIN
+    int "GPIO the right arm signal wire is on (level + bit-bang stages)"
+    default 24
+    range 0 63
+    depends on ENABLE_SERVO_TEST
+
+endmenu

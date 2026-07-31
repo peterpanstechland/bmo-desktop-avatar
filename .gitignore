@@ -1,0 +1,32 @@
+# Ignore TuyaOpen build artifacts (when building in-place)
+.build/
+dist/
+.cache/
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs and local secrets
+*.log
+.env
+.env.*
+secrets/
+**/tuya_config.local.h
+
+# Local build configs: hold the TuyaOpen license, copy from the .example files
+app_default.config
+config/TUYA_T5AI_CORE.config
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Windows
+desktop.ini

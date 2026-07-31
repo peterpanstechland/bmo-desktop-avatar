@@ -1,0 +1,19 @@
+--- a/src/liblvgl/v9/port/lv_port_disp_full_frame.c
++++ b/src/liblvgl/v9/port/lv_port_disp_full_frame.c
+@@ -143,10 +143,13 @@ static void __disp_mono_write_point(uint32_t x, uint32_t y, bool enable,
+ }
+ 
+ #if defined(UI_LANDSCAPE) && (UI_LANDSCAPE == 1)
+-/* Map LVGL logical (lx,ly) on 400x300 to physical panel coords 300x400. */
++/* Map LVGL logical (lx,ly) on 400x300 to physical panel coords 300x400.
++ * The panel is mounted upside-down on the BMO enclosure; negate both axes.
++ * For the opposite mounting use: px = 299 - ly; py = lx; */
+ static void __disp_landscape_map(uint32_t lx, uint32_t ly, uint32_t *px, uint32_t *py)
+ {
+-    *px = 299 - ly;
+-    *py = lx;
++    *px = ly;
++    *py = 399 - lx;
+ }
+ #endif
+ 
