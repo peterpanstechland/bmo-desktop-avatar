@@ -24,6 +24,7 @@
 #include "ai_audio_player.h"
 #include "ai_manage_mode.h"
 #include "ai_mode_combo.h"
+#include "ui_popup.h"
 
 /***********************************************************
 ************************macro define************************
@@ -131,6 +132,27 @@ static void __ai_mode_enter_speak(void)
 #endif
 
     tal_sw_timer_stop(sg_enter_idle_timer);
+}
+
+/**
+ * Leave the conversation right away instead of waiting out the 30 s idle timer.
+ * The state flags are cleared here rather than left to __ai_mode_enter_idle(),
+ * which only runs later on the mode task: until then a PLAY_END event would see
+ * sg_is_wakeup still set and bounce straight back into LISTEN.
+ */
+static void __ai_mode_exit_chat(void)
+{
+    ai_audio_player_stop(AI_AUDIO_PLAYER_ALL);
+    ai_audio_input_reset();
+    tuya_ai_agent_event(AI_EVENT_CHAT_BREAK, 0);
+    tuya_ai_input_stop();
+
+    sg_manual_talk = false;
+    sg_is_wakeup = false;
+
+    MODE_STATE_CHANGE(sg_mode_set_state, AI_MODE_STATE_IDLE);
+    PR_NOTICE("[====ai_combo] exit chat by key");
+    ui_popup_toast("Chat ended");
 }
 
 static void __ai_mode_enter_idle_time_cb(TIMER_ID timer_id, void *arg)
@@ -305,7 +327,15 @@ static OPERATE_RET __ai_mode_combo_handle_key(TDL_BUTTON_TOUCH_EVENT_E event, vo
 
     switch (event) {
     case TDL_BUTTON_PRESS_SINGLE_CLICK: {
-        /* Same as free: interrupt + wake into listen */
+        PR_NOTICE("[====ai_combo] single click, state=%s", ai_get_mode_state_str(sg_mode_set_state));
+
+        /* Already listening: the click means "we're done", not "wake again". */
+        if (AI_MODE_STATE_LISTEN == sg_mode_set_state && false == sg_manual_talk) {
+            __ai_mode_exit_chat();
+            break;
+        }
+
+        /* Otherwise interrupt whatever is playing or thinking and wake up. */
         ai_audio_player_stop(AI_AUDIO_PLAYER_ALL);
         ai_audio_input_reset();
         tuya_ai_agent_event(AI_EVENT_CHAT_BREAK, 0);
@@ -318,6 +348,17 @@ static OPERATE_RET __ai_mode_combo_handle_key(TDL_BUTTON_TOUCH_EVENT_E event, vo
     } break;
 
     case TDL_BUTTON_LONG_PRESS_START: {
+        /* Same "we're done" intent as the click above. The press has to land
+         * here as well because ai_chat_main.c arms the button with a 400 ms
+         * long-press threshold: a deliberate press on a stiff panel key easily
+         * runs past that, the state machine goes straight to LONG_HOLD and no
+         * single-click is ever emitted on release. Already listening means
+         * there is nothing for PTT to add, so treat it as the exit. */
+        if (AI_MODE_STATE_LISTEN == sg_mode_set_state && false == sg_manual_talk) {
+            __ai_mode_exit_chat();
+            break;
+        }
+
         /* Long-press PTT: interrupt and start streaming immediately */
         ai_audio_player_stop(AI_AUDIO_PLAYER_ALL);
         ai_audio_input_reset();

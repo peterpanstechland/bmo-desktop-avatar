@@ -12,17 +12,17 @@
 |------|------|
 | 屏幕 | ST7305 SPI 反射屏，横屏 400×300 UI |
 | 表情 | 13 种 BMO 风格表情，眨眼、眼珠转动、呼吸动画 |
-| 页面 | 表情页、时钟、天气、日历（飞书同步） |
+| 页面 | 表情页、翻页时钟、天气、日历（飞书同步）、小游戏（贪吃蛇、俄罗斯方块） |
 | 语音 | 涂鸦 AI 组合模式：唤醒词 + 单击 + 长按对讲 |
-| 按键 | 十字键（音量/翻页）、中键刷新、SW1 静音、SW2 系统信息、三角回主页、绿键彩蛋、红键对话 |
+| 按键 | 十字键（音量/翻页）、中键刷新、SW1 静音、SW2 系统信息（长按 5 秒重置网络）、三角返回、绿键彩蛋、红键对话 |
 | 舵机 | 双臂 SG90/MG90S，动作序列 + MCP 云端控制 |
-| 云端 | MCP 工具：切换表情、换页、手臂姿态、播放动作 |
+| 云端 | MCP 工具：切换表情、换页、手臂姿态、播放动作、语音记日程 |
 
 ## 硬件
 
 - **主控：** [涂鸦 T5AI-Core](https://developer.tuya.com/cn/docs/iot-device-dev/T5-E1-IPEX-development-board?id=Ke9xehig1cabj)
 - **屏幕：** 微雪 ESP32-S3-RLCD-4.2 同款 ST7305 面板（仅 3.3V）
-- **舵机：** 2× SG90/MG90S，左 P18 / 右 P24，外接 5V 供电，与板子共地
+- **舵机：** 2× SG90/MG90S，左 P18 / 右 P24，**独立 5V ≥2A 供电**，与板子共地（从板子 5V 引脚取电会在满音量 + 双臂同动时掉电重启）
 - **按键：** 10 键面板 — 见 [docs/bmo-pins.md](./docs/bmo-pins.md)
 - **外壳：** 可选 3D 打印件见 [`models/`](./models/)
 
@@ -51,16 +51,20 @@ New-Item -ItemType Junction -Path "C:\TuyaOpen\apps\tuya.ai\desktop_avatar" `
   -Target "C:\path\to\bmo-desktop-avatar"
 ```
 
-### 3. 打显示方向补丁
+### 3. 打 SDK 补丁
 
-本外壳安装方式需要将 LVGL 坐标映射翻转 180°（补丁在 SDK 层，不在应用内）：
+三个补丁都改的是 SDK，不在应用目录内，重装 SDK 后要重新打：
 
 ```bash
 cd TuyaOpen
 git apply /path/to/bmo-desktop-avatar/patches/lv_port_disp_landscape_180.patch
+git apply /path/to/bmo-desktop-avatar/patches/ai_chat_button_long_press.patch
+git apply /path/to/bmo-desktop-avatar/patches/tdl_button_double_click.patch
 ```
 
-目标文件：`src/liblvgl/v9/port/lv_port_disp_full_frame.c`。若屏幕安装方向相反，可跳过此补丁。
+- `lv_port_disp_landscape_180.patch`：本外壳的安装方式需要把 LVGL 坐标映射翻转 180°，目标文件 `src/liblvgl/v9/port/lv_port_disp_full_frame.c`。屏幕装反的话可以跳过。
+- `ai_chat_button_long_press.patch`：把红键的长按判定从 400ms 放宽到 700ms，否则正常按一下就被判成长按对讲，单击和双击都触发不了。
+- `tdl_button_double_click.patch`：修 `tdl_button` 状态机漏清零计数器的问题，不打这个补丁双击事件永远不会触发（红键双击切模式失效）。细节见 [docs/bmo-pins.md](./docs/bmo-pins.md)。
 
 ### 4. 配置密钥
 
@@ -75,7 +79,7 @@ cp config/TUYA_T5AI_CORE.config.example config/TUYA_T5AI_CORE.config
 
 1. **涂鸦产品 ID：** 设置 `CONFIG_TUYA_PRODUCT_ID` 为 [涂鸦 IoT 平台](https://platform.tuya.com/) 上的产品 ID。
 2. **Open SDK 授权：** 设置 `CONFIG_TUYA_OPENSDK_UUID` 和 `CONFIG_TUYA_OPENSDK_AUTHKEY`，授权码在[涂鸦采购页](https://platform.tuya.com/purchase/index?type=6)领取。也可以两项都留空，改用 `tos.py auth` 把授权码写进设备 flash——固件优先读取 flash 里的授权，这样编译期完全不接触密钥。
-3. **飞书日历（可选）：** 编辑 `src/ui/feishu_cal.h` 中的 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`。
+3. **飞书日历（可选）：** 编译前设好环境变量 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，密钥不落到被跟踪的文件里。还需要把日历授权给应用，详见 [docs/feishu-calendar.md](./docs/feishu-calendar.md)。
 
 切勿把授权码写进任何 `*.example` 文件或 `include/tuya_config.h`，它们都会被 git 跟踪。
 
@@ -89,7 +93,7 @@ tos.py flash -p COM6    # 下载口（本板日志口为 COM8）
 tos.py monitor -p COM8
 ```
 
-**配置陷阱：** `tos.py build` 读的是 `.build/cache/using.config`，不是 `config/` 里的模板。改完 Kconfig 后务必重新 `tos.py config choice`，或核对：
+**配置陷阱：** `tos.py build` 读的是 `.build/cache/using.config`，不是 `config/` 里的模板。改 Kconfig 值时 `app_default.config` 和 `config/TUYA_T5AI_CORE.config` 要**同时**改，否则缓存重建时旧值会被捞回来。改完重新 `tos.py config choice`，或核对：
 
 ```powershell
 rg SERVO_RIGHT_PWM .build\include\tuya_kconfig.h
@@ -104,7 +108,7 @@ rg SERVO_RIGHT_PWM .build\include\tuya_kconfig.h
 ├── docs/             接线、引脚、AI 提示词
 ├── include/          应用头文件
 ├── models/           3D 打印外壳 (.3mf)
-├── patches/          TuyaOpen SDK 补丁（屏幕旋转）
+├── patches/          TuyaOpen SDK 补丁（屏幕旋转、按键时序）
 ├── src/
 │   ├── ui/           BMO 脸、页面、按键、天气、日历
 │   ├── motion/       舵机 PWM、动作引擎、MCP、诊断工具
@@ -121,6 +125,7 @@ rg SERVO_RIGHT_PWM .build\include\tuya_kconfig.h
 | [docs/bmo-pins.md](./docs/bmo-pins.md) | 引脚表、PWM 通道映射、配置生效检查 |
 | [docs/st7305-wiring.md](./docs/st7305-wiring.md) | ST7305 与 T5AI-Core 接线 |
 | [docs/agent-system-prompt.md](./docs/agent-system-prompt.md) | 云端 AI Agent 工具调用提示词 |
+| [docs/feishu-calendar.md](./docs/feishu-calendar.md) | 飞书应用配置、日历授权、排错 |
 
 ## 舵机排查
 
@@ -131,6 +136,7 @@ rg SERVO_RIGHT_PWM .build\include\tuya_kconfig.h
 - 右臂 PWM 必须是 `SERVO_RIGHT_PWM=1`（P24），**不是** 4（P36）
 - 极性必须是 `TUYA_PWM_POSITIVE`（负极性会把脉宽反相）
 - 初始 duty 不能为 0（BK 驱动在 duty=0 时会进入 flip mode 且无法恢复）
+- 掉电重启：舵机必须独立供电；固件侧已做关键帧插值削峰和音量上限 `CONFIG_BMO_MAX_VOLUME`（默认 85），详见 [docs/bmo-pins.md](./docs/bmo-pins.md#舵机供电不要从开发板的-5v-引脚取电)
 
 ## 开源协议
 

@@ -11,9 +11,11 @@
 
 #include "ai_chat_main.h"
 #include "ai_manage_mode.h"
+#include "ai_audio_player.h"
 #include "ai_mode_combo.h"
 #include "app_chat_bot.h"
 #include "ui_main.h"
+#include "ui_popup.h"
 #include "ui_mcp_tools.h"
 #include "motion_engine.h"
 #include "motion_mcp.h"
@@ -112,9 +114,73 @@ static void __display_status_tm_cb(TIMER_ID timer_id, void *arg)
 
 #endif
 
+int app_volume_max(void)
+{
+#if defined(BMO_MAX_VOLUME)
+    return BMO_MAX_VOLUME;
+#else
+    return 100;
+#endif
+}
+
+OPERATE_RET app_volume_set(int vol)
+{
+    int max = app_volume_max();
+
+    if (vol > max) {
+        vol = max;
+    } else if (vol < 0) {
+        vol = 0;
+    }
+    return ai_chat_set_volume(vol);
+}
+
+/* Each mode owns its button behaviour, so the only way to tell them apart from
+ * the outside is to say which one is now active. */
+static const char *__mode_hint(AI_CHAT_MODE_E mode)
+{
+    switch ((int)mode) {
+    case AI_CHAT_MODE_HOLD:
+        return "hold red to talk";
+    case AI_CHAT_MODE_ONE_SHOT:
+        return "click red to talk";
+    case AI_CHAT_MODE_WAKEUP:
+        return "say NiHaoTuYa";
+    case AI_CHAT_MODE_FREE:
+        return "always listening";
+    default:
+        return "wake word / click / hold";
+    }
+}
+
+static void __on_mode_switch(AI_CHAT_MODE_E mode)
+{
+    const char *name = ai_get_mode_name_str(mode);
+    char buf[64];
+
+    if (NULL == name) {
+        return;
+    }
+
+    PR_NOTICE("chat mode -> %s (%d)", name, (int)mode);
+    snprintf(buf, sizeof(buf), "%s\n%s", name, __mode_hint(mode));
+    ui_popup_toast(buf);
+
+    /* The SDK announces a switch with AI_AUDIO_ALERT_LONG_KEY_TALK + mode id,
+     * which only lines up for the four built-in modes. Combo's id is
+     * AI_CHAT_MODE_CUSTOM_START (0x100), so that sum lands past
+     * AI_AUDIO_ALERT_MAX and the alert is dropped without a sound. */
+    if (AI_CHAT_MODE_COMBO == mode) {
+        ai_audio_player_alert(AI_AUDIO_ALERT_WAKEUP_TALK);
+    }
+}
+
 static void __ai_chat_handle_event(AI_NOTIFY_EVENT_T *event)
 {
     switch(event->type) {
+        case AI_USER_EVT_MODE_SWITCH: {
+            __on_mode_switch((AI_CHAT_MODE_E)(event->data));
+        } break;
         #if defined(ENABLE_PRINTER) && (ENABLE_PRINTER == 1)
         case AI_USER_EVT_GENERATE_PICTURE:
         case AI_USER_EVT_GET_PICTURE_FROM_APP: {
@@ -153,6 +219,15 @@ OPERATE_RET app_chat_bot_init(void)
         if (OPRT_OK == ai_mode_get_curr_mode(&cur_mode) && cur_mode != AI_CHAT_MODE_COMBO) {
             ai_mode_switch(AI_CHAT_MODE_COMBO);
             PR_NOTICE("boot force switch to combo mode (was %d)", (int)cur_mode);
+        }
+    }
+
+    /* Same for volume: KV can hold a level saved before the cap existed. */
+    {
+        int vol = ai_chat_get_volume();
+        if (vol > app_volume_max()) {
+            PR_NOTICE("boot clamp volume %d -> %d", vol, app_volume_max());
+            app_volume_set(vol);
         }
     }
 

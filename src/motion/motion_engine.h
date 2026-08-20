@@ -13,6 +13,9 @@ typedef enum {
     MOTION_THINK_POSE,
     MOTION_DANCE,
     MOTION_IDLE_SWAY,
+    /* Keep new ids at the end: ui_avatar.c stores these values in its
+     * expression table and passes them back as plain integers. */
+    MOTION_LISTEN_POSE,
 } MOTION_ID_E;
 
 OPERATE_RET motion_engine_init(void);

@@ -23,6 +23,8 @@ static lv_obj_t *sg_toast = NULL;
 static lv_timer_t *sg_toast_timer = NULL;
 static lv_obj_t *sg_sysinfo = NULL;
 static lv_timer_t *sg_sysinfo_timer = NULL;
+static lv_obj_t *sg_hold = NULL;
+static lv_obj_t *sg_hold_label = NULL;
 
 /* Boxes are plain white with a black outline: the panel is a 1-bit reflective
  * LCD, so anything relying on shades of grey disappears. */
@@ -86,6 +88,42 @@ void ui_popup_toast(const char *msg)
 
     sg_toast_timer = lv_timer_create(__toast_close_cb, TOAST_HOLD_MS, NULL);
     lv_timer_set_repeat_count(sg_toast_timer, 1);
+
+    lv_vendor_disp_unlock();
+}
+
+void ui_popup_hold_show(const char *msg)
+{
+    if (!msg) {
+        return;
+    }
+
+    lv_vendor_disp_lock();
+
+    if (!sg_hold) {
+        sg_hold = __box_create(LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        sg_hold_label = __label_create(sg_hold, msg);
+        lv_obj_set_style_text_align(sg_hold_label, LV_TEXT_ALIGN_CENTER, 0);
+    } else {
+        lv_label_set_text(sg_hold_label, msg);
+    }
+    /* Re-centre every time: the box hugs its content, so the text changing
+     * length moves it off centre. */
+    lv_obj_center(sg_hold_label);
+    lv_obj_center(sg_hold);
+
+    lv_vendor_disp_unlock();
+}
+
+void ui_popup_hold_hide(void)
+{
+    lv_vendor_disp_lock();
+
+    if (sg_hold) {
+        lv_obj_del(sg_hold);
+        sg_hold = NULL;
+        sg_hold_label = NULL;
+    }
 
     lv_vendor_disp_unlock();
 }

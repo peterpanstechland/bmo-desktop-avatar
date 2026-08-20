@@ -92,6 +92,11 @@ config BMO_BTN_GREEN
     range 0 63
     depends on ENABLE_BMO_BUTTONS
 
+config BMO_MAX_VOLUME
+    int "Volume ceiling (guards against brownout when the arms move)"
+    default 85
+    range 10 100
+
 config ENABLE_MOTION_ENGINE
     bool "Enable dual-arm servo motion engine"
     default y

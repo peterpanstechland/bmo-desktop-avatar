@@ -4,6 +4,7 @@
  */
 
 #include "tal_api.h"
+#include "tal_time_service.h"
 #include "lv_vendor.h"
 #include "tuya_weather.h"
 #include "ui_bg_task.h"
@@ -53,6 +54,67 @@ static const char *__weather_text(int code)
     }
 }
 
+/* "明天"/"后天" read better than a weekday for the near days, and past that a
+ * weekday beats counting days in your head. */
+static const char *__day_label(int day_offset)
+{
+    static const char *const wday[] = {"周日", "周一", "周二", "周三", "周四", "周五", "周六"};
+    POSIX_TM_S tm;
+
+    if (day_offset == 1) {
+        return "明天";
+    }
+    if (day_offset == 2) {
+        return "后天";
+    }
+
+    tal_time_get_local_time_custom(tal_time_get_posix() + (TIME_T)day_offset * 86400, &tm);
+    return wday[tm.tm_wday % 7];
+}
+
+/*
+ * Index 0 of every forecast endpoint is today, not tomorrow — see
+ * tuya_weather_get_today_high_low_temp(), which asks for one day and then reads
+ * w.thigh.0. So the three future days live at 1..3 and the request has to cover
+ * FC_DAYS of them.
+ *
+ * Temperature comes from thigh/tlow rather than the forecast conditions block:
+ * w.temp is documented as unsupported in mainland China and comes back as a
+ * flat 0, which is what made the rows look empty.
+ */
+#define FC_DAYS 4
+
+static void __fill_forecast(UI_WEATHER_DATA_T *data)
+{
+    WEATHER_FORECAST_CONDITIONS_T fc = {0};
+    int  hi[FC_DAYS] = {0};
+    int  lo[FC_DAYS] = {0};
+    bool has_cond, has_temp;
+
+    has_cond = (tuya_weather_get_forecast_conditions(FC_DAYS, &fc) == OPRT_OK);
+    has_temp = (tuya_weather_get_forecast_high_low_temp(FC_DAYS, hi, lo) == OPRT_OK);
+
+    PR_NOTICE("[bg] forecast cond=%d temp=%d w=[%d,%d,%d] hi=[%d,%d,%d] lo=[%d,%d,%d]", has_cond, has_temp,
+              fc.weather_v[1], fc.weather_v[2], fc.weather_v[3], hi[1], hi[2], hi[3], lo[1], lo[2], lo[3]);
+
+    for (int i = 0; i < 3; i++) {
+        char      *slot  = data->forecast[i];
+        size_t     size  = sizeof(data->forecast[i]);
+        int        d     = i + 1;
+        const char *label = __day_label(d);
+
+        /* Valid condition codes are 101..146, so a zero means the cloud left
+         * that day out of the response. */
+        if (!has_cond || fc.weather_v[d] == 0) {
+            snprintf(slot, size, "%s  --", label);
+        } else if (has_temp && (hi[d] != 0 || lo[d] != 0)) {
+            snprintf(slot, size, "%s  %s  %d°/%d°", label, __weather_text(fc.weather_v[d]), hi[d], lo[d]);
+        } else {
+            snprintf(slot, size, "%s  %s", label, __weather_text(fc.weather_v[d]));
+        }
+    }
+}
+
 static void __refresh_weather(void)
 {
     if (!tuya_weather_allow_update()) {
@@ -62,7 +124,6 @@ static void __refresh_weather(void)
 
     UI_WEATHER_DATA_T data = {0};
     WEATHER_CURRENT_CONDITIONS_T cur = {0};
-    WEATHER_FORECAST_CONDITIONS_T fc = {0};
 
     if (tuya_weather_get_current_conditions(&cur) != OPRT_OK) {
         return;
@@ -73,12 +134,7 @@ static void __refresh_weather(void)
     data.humi    = cur.humi;
     snprintf(data.condition, sizeof(data.condition), "%s", __weather_text(cur.weather));
     tuya_weather_get_today_high_low_temp(&data.hi, &data.lo);
-    if (tuya_weather_get_forecast_conditions(3, &fc) == OPRT_OK) {
-        for (int i = 0; i < 3; i++) {
-            snprintf(data.forecast[i], sizeof(data.forecast[i]), "D+%d %s %dC", i + 1, __weather_text(fc.weather_v[i]),
-                     fc.temp_v[i]);
-        }
-    }
+    __fill_forecast(&data);
 
     sg_weather_cache = data;
 

@@ -1,0 +1,15 @@
+diff --git a/src/ai_components/ai_main/src/ai_chat_main.c b/src/ai_components/ai_main/src/ai_chat_main.c
+index fd759e0d..b8d7c4cb 100755
+--- a/src/ai_components/ai_main/src/ai_chat_main.c
++++ b/src/ai_components/ai_main/src/ai_chat_main.c
+@@ -292,7 +292,9 @@ static OPERATE_RET __ai_chat_mode_open_button(void)
+ 
+     tdl_button_set_task_stack_size(4096);
+ 
+-    TDL_BUTTON_CFG_T button_cfg = {.long_start_valid_time = 400,
++    /* 400 ms is shorter than a deliberate press on a panel key, so every press
++     * became a long-press PTT and neither single nor double click could fire. */
++    TDL_BUTTON_CFG_T button_cfg = {.long_start_valid_time = 700,
+                                    .long_keep_timer = 0,
+                                    .button_debounce_time = 50,
+                                    .button_repeat_valid_count = 2,

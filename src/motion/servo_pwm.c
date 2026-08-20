@@ -118,6 +118,14 @@ OPERATE_RET servo_set_angle(SERVO_ARM_E arm, uint8_t angle)
     return __servo_apply(arm, angle);
 }
 
+uint8_t servo_get_angle(SERVO_ARM_E arm)
+{
+    if (arm > SERVO_ARM_RIGHT) {
+        return SERVO_NEUTRAL_DEG;
+    }
+    return sg_servos[arm].inited ? sg_servos[arm].angle : SERVO_NEUTRAL_DEG;
+}
+
 OPERATE_RET servo_move_smooth(SERVO_ARM_E arm, uint8_t target, uint32_t duration_ms)
 {
     uint8_t start;

@@ -11,6 +11,7 @@
 #include "ui_clock.h"
 #include "ui_weather.h"
 #include "ui_calendar.h"
+#include "ui_games.h"
 #include "ui_bg_task.h"
 #include <string.h>
 #include <ctype.h>
@@ -20,6 +21,7 @@ static UI_PAGE_T sg_pages[] = {
     {"clock",    clock_page_create,    clock_page_destroy,    NULL},
     {"weather",  weather_page_create,  weather_page_destroy,  weather_page_on_press},
     {"calendar", calendar_page_create, calendar_page_destroy, calendar_page_on_press},
+    {"games",    games_page_create,    games_page_destroy,    games_page_on_press},
 };
 
 static int sg_page_cnt = (int)(sizeof(sg_pages) / sizeof(sg_pages[0]));
@@ -119,6 +121,10 @@ int page_mgr_name_to_idx(const char *page)
         0 == strcmp(page, "日程")) {
         return 3;
     }
+    if (0 == __strcasecmp_local(page, "games") || 0 == __strcasecmp_local(page, "game") ||
+        0 == strcmp(page, "游戏") || 0 == strcmp(page, "小游戏")) {
+        return 4;
+    }
     return -1;
 }
 
@@ -155,6 +161,8 @@ bool page_mgr_try_asr_navigate(const char *text)
         idx = 2;
     } else if (strstr(text, "日历") != NULL || strstr(text, "日程") != NULL) {
         idx = 3;
+    } else if (strstr(text, "游戏") != NULL || strstr(text, "小游戏") != NULL) {
+        idx = 4;
     } else {
         return false;
     }

@@ -3,12 +3,18 @@
 
 #include "tuya_cloud_types.h"
 
-/* Replace with your Feishu app credentials before use */
+/* Replace with your Feishu app credentials before use. See docs/feishu-calendar.md */
 #ifndef FEISHU_APP_ID
 #define FEISHU_APP_ID     "cli_xxxxxxxxxx"
 #endif
 #ifndef FEISHU_APP_SECRET
 #define FEISHU_APP_SECRET "xxxxxxxxxxxxxxxxxxxxxxxx"
+#endif
+
+/* Optional. Leave empty to auto-pick the calendar shared with the bot; set it
+ * when the app can see several calendars and the wrong one wins. */
+#ifndef FEISHU_CAL_ID
+#define FEISHU_CAL_ID ""
 #endif
 
 #define FEISHU_CAL_MAX_EVENTS 10
@@ -30,5 +36,16 @@ OPERATE_RET feishu_cal_fetch(FEISHU_CAL_DATA_T *out);
 void        feishu_cal_request_refresh(void);
 void        feishu_cal_bind_refresh_sem(SEM_HANDLE sem);
 bool        feishu_cal_take_refresh_request(void);
+
+/**
+ * Create an event on the synced calendar. day_offset counts days forward from
+ * today in local time (0 = today), hour/minute are the local start. Fills
+ * `when` with a "MM-DD HH:MM" echo of what was booked.
+ *
+ * Blocks on HTTPS, so keep it off the LVGL thread. The bot needs writer on the
+ * calendar; reader access fails with a permission error.
+ */
+OPERATE_RET feishu_cal_add_event(const char *title, int day_offset, int hour, int minute,
+                                 int duration_min, char *when, size_t when_size);
 
 #endif

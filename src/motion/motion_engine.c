@@ -9,6 +9,7 @@
 #include <string.h>
 
 #define MOTION_TICK_MS  20
+#define MOTION_ENTRY_MS 200 /* ramp from the current pose into the first keyframe */
 
 typedef struct {
     uint16_t t_ms;
@@ -47,6 +48,9 @@ static const MOTION_KF_T sg_kf_dance[] = {
 static const MOTION_KF_T sg_kf_sway[] = {
     {0, 80, 100}, {400, 100, 80}, {800, 80, 100},
 };
+static const MOTION_KF_T sg_kf_listen[] = {
+    {0, 100, 100},
+};
 
 static const MOTION_SEQ_T sg_sequences[] = {
     {"neutral", MOTION_NEUTRAL, sg_kf_neutral, 1},
@@ -57,6 +61,7 @@ static const MOTION_SEQ_T sg_sequences[] = {
     {"think_pose", MOTION_THINK_POSE, sg_kf_think, 2},
     {"dance", MOTION_DANCE, sg_kf_dance, 5},
     {"idle_sway", MOTION_IDLE_SWAY, sg_kf_sway, 3},
+    {"listen_pose", MOTION_LISTEN_POSE, sg_kf_listen, 1},
 };
 
 static THREAD_HANDLE sg_motion_thread = NULL;
@@ -86,8 +91,45 @@ static const MOTION_SEQ_T *__find_seq_by_name(const char *name)
     return NULL;
 }
 
+static uint8_t __lerp(uint8_t from, uint8_t to, uint16_t pos, uint16_t span)
+{
+    if (span == 0) {
+        return to;
+    }
+    return (uint8_t)((int)from + ((int)to - (int)from) * (int)pos / (int)span);
+}
+
+/* Walk both arms to a pose over @p ms instead of jumping there. */
+static void __ramp_to(uint8_t left, uint8_t right, uint16_t ms)
+{
+    uint8_t l0 = servo_get_angle(SERVO_ARM_LEFT);
+    uint8_t r0 = servo_get_angle(SERVO_ARM_RIGHT);
+    uint16_t t;
+
+    if (l0 == left && r0 == right) {
+        return;
+    }
+    for (t = MOTION_TICK_MS; t < ms; t += MOTION_TICK_MS) {
+        servo_set_angle(SERVO_ARM_LEFT, __lerp(l0, left, t, ms));
+        servo_set_angle(SERVO_ARM_RIGHT, __lerp(r0, right, t, ms));
+        tal_system_sleep(MOTION_TICK_MS);
+    }
+    servo_set_angle(SERVO_ARM_LEFT, left);
+    servo_set_angle(SERVO_ARM_RIGHT, right);
+}
+
+/*
+ * Keyframes are interpolated rather than applied as steps. A step tells both
+ * servos to cross tens of degrees as fast as they can, and the two stall
+ * currents land on the rail at the same instant; with the speaker also near
+ * full output that dip is enough to reset the board. Ramping spreads the same
+ * travel over the frame interval, which keeps each servo well under its
+ * no-load speed, and it looks better too.
+ */
 static void __play_seq(const MOTION_SEQ_T *seq)
 {
+    const MOTION_KF_T *kfs;
+    uint16_t total;
     uint16_t elapsed = 0;
     uint8_t li = 0;
 
@@ -95,22 +137,37 @@ static void __play_seq(const MOTION_SEQ_T *seq)
         return;
     }
 
-    sg_running = true;
-    servo_set_angle(SERVO_ARM_LEFT, seq->kfs[0].left_deg);
-    servo_set_angle(SERVO_ARM_RIGHT, seq->kfs[0].right_deg);
+    kfs = seq->kfs;
+    total = kfs[seq->kf_cnt - 1].t_ms;
 
-    while (elapsed < seq->kfs[seq->kf_cnt - 1].t_ms) {
-        while (li + 1 < seq->kf_cnt && elapsed >= seq->kfs[li + 1].t_ms) {
+    sg_running = true;
+    __ramp_to(kfs[0].left_deg, kfs[0].right_deg, MOTION_ENTRY_MS);
+
+    while (elapsed < total) {
+        uint8_t left, right;
+
+        while (li + 1 < seq->kf_cnt && elapsed >= kfs[li + 1].t_ms) {
             li++;
         }
-        servo_set_angle(SERVO_ARM_LEFT, seq->kfs[li].left_deg);
-        servo_set_angle(SERVO_ARM_RIGHT, seq->kfs[li].right_deg);
+
+        if (li + 1 < seq->kf_cnt) {
+            uint16_t span = kfs[li + 1].t_ms - kfs[li].t_ms;
+            uint16_t pos = elapsed - kfs[li].t_ms;
+            left = __lerp(kfs[li].left_deg, kfs[li + 1].left_deg, pos, span);
+            right = __lerp(kfs[li].right_deg, kfs[li + 1].right_deg, pos, span);
+        } else {
+            left = kfs[li].left_deg;
+            right = kfs[li].right_deg;
+        }
+
+        servo_set_angle(SERVO_ARM_LEFT, left);
+        servo_set_angle(SERVO_ARM_RIGHT, right);
         tal_system_sleep(MOTION_TICK_MS);
         elapsed += MOTION_TICK_MS;
     }
 
-    servo_set_angle(SERVO_ARM_LEFT, seq->kfs[seq->kf_cnt - 1].left_deg);
-    servo_set_angle(SERVO_ARM_RIGHT, seq->kfs[seq->kf_cnt - 1].right_deg);
+    servo_set_angle(SERVO_ARM_LEFT, kfs[seq->kf_cnt - 1].left_deg);
+    servo_set_angle(SERVO_ARM_RIGHT, kfs[seq->kf_cnt - 1].right_deg);
     sg_running = false;
 }
 
@@ -186,8 +243,7 @@ void motion_on_avatar_state(int avatar_state)
     /* AVATAR_IDLE=0 LISTEN=1 THINK=2 SPEAK=3 from ui_avatar.h */
     switch (avatar_state) {
     case 1: /* LISTEN */
-        servo_set_angle(SERVO_ARM_LEFT, 100);
-        servo_set_angle(SERVO_ARM_RIGHT, 100);
+        motion_engine_play(MOTION_LISTEN_POSE);
         break;
     case 2: /* THINK */
         motion_engine_play(MOTION_THINK_POSE);

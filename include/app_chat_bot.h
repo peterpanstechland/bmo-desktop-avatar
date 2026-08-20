@@ -28,6 +28,16 @@ extern "C" {
 ***********************************************************/
 OPERATE_RET app_chat_bot_init(void);
 
+/**
+ * Volume ceiling in effect (BMO_MAX_VOLUME). Both servos starting at once
+ * while the speaker is near full output browns out the 5 V rail, so every
+ * volume path is capped instead of allowing the full 0-100.
+ */
+int app_volume_max(void);
+
+/** Set the volume, clamped to [0, app_volume_max()]. */
+OPERATE_RET app_volume_set(int vol);
+
 #ifdef __cplusplus
 }
 #endif

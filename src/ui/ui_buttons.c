@@ -19,13 +19,16 @@
 
 #include "tal_api.h"
 #include "tkl_gpio.h"
+#include "tuya_iot.h"
 #include "ai_chat_main.h"
+#include "app_chat_bot.h"
 #include "ui_buttons.h"
 #include "ui_page_mgr.h"
 #include "ui_avatar.h"
 #include "ui_bg_task.h"
 #include "ui_popup.h"
 #include "motion_engine.h"
+#include "ui_games.h"
 #include "lv_vendor.h"
 
 #define BMO_POLL_MS       20  /* one pull phase per tick, so a cycle is 40 ms */
@@ -36,6 +39,11 @@
 #define BMO_SIG_LOW   0 /* 0,0 */
 #define BMO_SIG_FLOAT 2 /* 1,0 */
 #define BMO_SIG_HIGH  3 /* 1,1 */
+
+/* Holding SW2 wipes the WiFi credentials and the cloud binding, so it waits out
+ * a visible countdown that releasing cancels. */
+#define NETCFG_HOLD_MS 5000
+#define NETCFG_HINT_MS 1200
 
 typedef void (*BMO_BTN_ACTION_CB)(void);
 
@@ -52,6 +60,7 @@ typedef struct {
     uint8_t match;    /* consecutive cycles reporting last_sig */
     uint8_t pressed;
     uint16_t held;
+    uint32_t press_ms;
 } BMO_BTN_ST_T;
 
 #define BMO_VOL_DEFAULT 70
@@ -62,7 +71,7 @@ static void __vol_apply(int vol)
 {
     char buf[16];
 
-    ai_chat_set_volume(vol);
+    app_volume_set(vol);
     snprintf(buf, sizeof(buf), "Vol %d", vol);
     ui_popup_toast(buf);
 
@@ -74,8 +83,8 @@ static void __vol_apply(int vol)
 static void __act_up(void)
 {
     int vol = ai_chat_get_volume() + 10;
-    if (vol > 100) {
-        vol = 100;
+    if (vol > app_volume_max()) {
+        vol = app_volume_max();
     }
     sg_vol_before_mute = 0;
     __vol_apply(vol);
@@ -207,6 +216,55 @@ static uint8_t __measure_sig(TUYA_GPIO_NUM_E pin)
     return (uint8_t)((up << 1) | down);
 }
 
+static int sg_netcfg_left = -1;
+
+static void __netcfg_cancel(void)
+{
+    if (sg_netcfg_left >= 0) {
+        sg_netcfg_left = -1;
+        ui_popup_hold_hide();
+    }
+}
+
+/*
+ * tuya_iot_reset() raises TUYA_EVENT_RESET_COMPLETE, which reboots straight
+ * away, so the notice has to be on screen before the call. The panel needs a
+ * moment to actually push the frame out; blocking the poll loop for it is fine
+ * when the next thing that happens is a reboot.
+ */
+static void __netcfg_reset(void)
+{
+    PR_NOTICE("[bmo-btn] SW2 held %d ms, clearing network config", NETCFG_HOLD_MS);
+    ui_popup_hold_show("正在重置网络\n请用涂鸦 App 重新配网");
+    tal_system_sleep(1500);
+    tuya_iot_reset(tuya_iot_client_get());
+}
+
+static void __netcfg_hold(uint32_t held_ms)
+{
+    char buf[64];
+    int left;
+
+    if (held_ms < NETCFG_HINT_MS) {
+        return;
+    }
+    if (held_ms >= NETCFG_HOLD_MS) {
+        if (sg_netcfg_left != 0) {
+            sg_netcfg_left = 0;
+            __netcfg_reset();
+        }
+        return;
+    }
+
+    left = (int)((NETCFG_HOLD_MS - held_ms + 999) / 1000);
+    if (left == sg_netcfg_left) {
+        return;
+    }
+    sg_netcfg_left = left;
+    snprintf(buf, sizeof(buf), "重置网络 %d\n松开取消", left);
+    ui_popup_hold_show(buf);
+}
+
 static void __on_cycle(int i)
 {
     BMO_BTN_ST_T *st = &sg_st[i];
@@ -225,19 +283,34 @@ static void __on_cycle(int i)
 
     pressed = (sig != st->idle_sig) ? 1 : 0;
     if (pressed != st->pressed) {
+        bool consumed = false;
+
         st->pressed = pressed;
         st->held = 0;
+        st->press_ms = (uint32_t)tal_system_get_millisecond();
         PR_NOTICE("[bmo-btn] %s P%d %s (%s)", sg_hw[i].name, (int)sg_hw[i].pin,
                   pressed ? "DOWN" : "UP", __sig_name(sig));
-        if (pressed && sg_hw[i].action) {
+
+        if (page_mgr_get_current() == PAGE_IDX_GAMES) {
+            consumed = games_btn_event(i, pressed ? true : false);
+        }
+        if (!pressed && sg_hw[i].pin == (TUYA_GPIO_NUM_E)BMO_BTN_SW2) {
+            __netcfg_cancel();
+        }
+        if (pressed && !consumed && sg_hw[i].action) {
             sg_hw[i].action();
         }
-    } else if (pressed && ++st->held > BMO_STUCK_CYCLES) {
-        PR_WARN("[bmo-btn] %s P%d held 10s, re-baselining idle to %s", sg_hw[i].name,
-                (int)sg_hw[i].pin, __sig_name(sig));
-        st->idle_sig = sig;
-        st->pressed = 0;
-        st->held = 0;
+    } else if (pressed) {
+        if (++st->held > BMO_STUCK_CYCLES) {
+            PR_WARN("[bmo-btn] %s P%d held 10s, re-baselining idle to %s", sg_hw[i].name,
+                    (int)sg_hw[i].pin, __sig_name(sig));
+            st->idle_sig = sig;
+            st->pressed = 0;
+            st->held = 0;
+            __netcfg_cancel();
+        } else if (sg_hw[i].pin == (TUYA_GPIO_NUM_E)BMO_BTN_SW2) {
+            __netcfg_hold((uint32_t)tal_system_get_millisecond() - st->press_ms);
+        }
     }
 }
 

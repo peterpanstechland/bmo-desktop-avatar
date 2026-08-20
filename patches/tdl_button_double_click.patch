@@ -1,0 +1,17 @@
+diff --git a/src/peripherals/button/tdl_button/src/tdl_button_manage.c b/src/peripherals/button/tdl_button/src/tdl_button_manage.c
+index cb87a1c3..d6868178 100644
+--- a/src/peripherals/button/tdl_button/src/tdl_button_manage.c
++++ b/src/peripherals/button/tdl_button/src/tdl_button_manage.c
+@@ -492,6 +492,12 @@ static void __tdl_button_state_handle(TDL_BUTTON_LIST_NODE_T *p_node)
+             PUT_EVENT_CB(p_node->user_data, p_node->name, TDL_BUTTON_PRESS_DOWN,
+                          TDL_BUTTON_EVENT_ARG(p_node->device_data.repeat));
+             p_node->device_data.flag = BTN_FSM_REPEAT_PRESSED;
++            /* Every other transition restarts the counter, and BTN_FSM_REPEAT_PRESSED
++             * compares it against button_repeat_valid_time to decide whether this
++             * second press was short enough to complete a double click. Leaving the
++             * wait-for-repeat time in it measures from the *first* release instead,
++             * which any real double click overruns, so the event never fired. */
++            p_node->device_data.ticks = 0;
+         } else {
+             /*release timeout*/
+             if (p_node->device_data.ticks >=

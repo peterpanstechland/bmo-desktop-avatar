@@ -13,4 +13,11 @@ void ui_popup_toast(const char *msg);
 /** Show or hide the system info panel (IP, RSSI, free heap, firmware). */
 void ui_popup_sysinfo_toggle(void);
 
+/**
+ * Centred message that stays until hidden, for feedback that has to track a
+ * button being held. Calling it again just retitles the existing box.
+ */
+void ui_popup_hold_show(const char *msg);
+void ui_popup_hold_hide(void);
+
 #endif
