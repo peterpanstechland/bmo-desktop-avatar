@@ -1,0 +1,250 @@
+diff --git a/boards/T5AI/TUYA_T5AI_CORE/tuya_t5ai_core.c b/boards/T5AI/TUYA_T5AI_CORE/tuya_t5ai_core.c
+index 563f7c6..11d12e1 100755
+--- a/boards/T5AI/TUYA_T5AI_CORE/tuya_t5ai_core.c
++++ b/boards/T5AI/TUYA_T5AI_CORE/tuya_t5ai_core.c
+@@ -12,6 +12,7 @@
+ #include "tdd_audio.h"
+ #include "tdd_led_gpio.h"
+ #include "tdd_button_gpio.h"
++#include "tdd_disp_st7305.h"
+ /***********************************************************
+ ************************macro define************************
+ ***********************************************************/
+@@ -23,6 +24,25 @@
+ #define BOARD_LED_PIN       TUYA_GPIO_NUM_9
+ #define BOARD_LED_ACTIVE_LV TUYA_GPIO_LEVEL_HIGH
+ 
++/* ST7305 reflective mono panel, same 4.2" glass as Waveshare ESP32-S3-RLCD-4.2.
++ * Wiring in docs/st7305-wiring.md: SCL=P14 SDA=P16 CS=P15 DC=P17 RST=P6, TE unused.
++ * P14/P15/P16 are the SPI0 group-0 defaults on T5AI, so no pinmux call is needed. */
++#define BOARD_LCD_BL_TYPE TUYA_DISP_BL_TP_NONE
++
++#define BOARD_LCD_WIDTH    300
++#define BOARD_LCD_HEIGHT   400
++#define BOARD_LCD_X_OFFSET 0x12 /* column window starts at 0x12 on this glass */
++#define BOARD_LCD_Y_OFFSET 0
++#define BOARD_LCD_ROTATION TUYA_DISPLAY_ROTATION_0
++
++#define BOARD_LCD_SPI_PORT    TUYA_SPI_NUM_0
++#define BOARD_LCD_SPI_CLK     10000000
++#define BOARD_LCD_SPI_CS_PIN  TUYA_GPIO_NUM_15
++#define BOARD_LCD_SPI_DC_PIN  TUYA_GPIO_NUM_17
++#define BOARD_LCD_SPI_RST_PIN TUYA_GPIO_NUM_6
++
++#define BOARD_LCD_POWER_PIN TUYA_GPIO_NUM_MAX
++
+ /***********************************************************
+ ***********************typedef define***********************
+ ***********************************************************/
+@@ -34,6 +54,43 @@
+ /***********************************************************
+ ***********************variable define**********************
+ ***********************************************************/
++/* The driver's built-in sequence targets the 168x384 T5AI Pocket glass; its power rails
++ * (0xC0-0xC5), frame rate (0xB2), gate EQ (0xB3) and NVM load (0xD6) are wrong for the 4.2"
++ * panel and leave it unreadable. Bytes below match Waveshare's reference display_bsp.cpp
++ * for the same glass, with two deliberate deviations:
++ *   - 0x21 (inversion on) is kept as 0x20 (off), because TuyaOpen packs bit 1 = black while
++ *     the Waveshare driver packs bit 1 = white. Same optical result.
++ *   - CASET/RASET are omitted; the driver programs them from x_offset/y_offset each flush.
++ * Format is {1 + data_len, delay_ms, cmd, data...}, zero terminated.
++ * Note 0xB0 gets overwritten with height/4 by the driver, which is 0x64 here anyway. */
++static uint8_t sg_st7305_ws42_init_seq[] = {
++    3,  0,   0xD6, 0x17, 0x02,                                                 // NVM Load Control
++    2,  0,   0xD1, 0x01,                                                       // Booster Enable
++    3,  0,   0xC0, 0x11, 0x04,                                                 // Gate Voltage Setting
++    5,  0,   0xC1, 0x69, 0x69, 0x69, 0x69,                                     // VSHP Setting
++    5,  0,   0xC2, 0x19, 0x19, 0x19, 0x19,                                     // VSLP Setting
++    5,  0,   0xC4, 0x4B, 0x4B, 0x4B, 0x4B,                                     // VSHN Setting
++    5,  0,   0xC5, 0x19, 0x19, 0x19, 0x19,                                     // VSLN Setting
++    3,  0,   0xD8, 0x80, 0xE9,                                                 // OSC Setting
++    2,  0,   0xB2, 0x02,                                                       // Frame Rate Control
++    11, 0,   0xB3, 0xE5, 0xF6, 0x05, 0x46, 0x77, 0x77, 0x77, 0x77, 0x76, 0x45, // Update Period Gate
++    9,  0,   0xB4, 0x05, 0x46, 0x77, 0x77, 0x77, 0x77, 0x76, 0x45,             // Update Period Gate LPM
++    4,  0,   0x62, 0x32, 0x03, 0x1F,                                           // Gate Timing Control
++    2,  0,   0xB7, 0x13,                                                       // Source EQ Enable
++    2,  0,   0xB0, 0x64,                                                       // Gate Line Setting 400/4
++    1,  200, 0x11,                                                             // Sleep out
++    2,  0,   0xC9, 0x00,                                                       // Source Voltage Select
++    2,  0,   0x36, 0x48, // Memory Data Access Control (MX=1, DO=1)
++    2,  0,   0x3A, 0x11, // Data Format Select (3 write for 24bit)
++    2,  0,   0xB9, 0x20, // Gamma Mode Setting (Mono)
++    2,  0,   0xB8, 0x29, // Panel Setting (1-Dot inversion, Frame inversion, One Line Interlace)
++    1,  0,   0x20,       // Display Inversion OFF
++    2,  0,   0x35, 0x00, // Tearing Effect Line ON
++    2,  0,   0xD0, 0xFF, // Auto power down OFF
++    1,  0,   0x38,       // HPM (High Power Mode)
++    1,  10,  0x29,       // Display ON
++    0                    // Terminate list
++};
+ 
+ /***********************************************************
+ ***********************function define**********************
+@@ -97,8 +154,40 @@ static OPERATE_RET __board_register_led(void)
+     return rt;
+ }
+ 
++static OPERATE_RET __board_register_display(void)
++{
++    OPERATE_RET rt = OPRT_OK;
++
++#if defined(DISPLAY_NAME)
++    DISP_SPI_DEVICE_CFG_T display_cfg;
++
++    memset(&display_cfg, 0, sizeof(DISP_SPI_DEVICE_CFG_T));
++
++    display_cfg.bl.type = BOARD_LCD_BL_TYPE;
++
++    display_cfg.width    = BOARD_LCD_WIDTH;
++    display_cfg.height   = BOARD_LCD_HEIGHT;
++    display_cfg.x_offset = BOARD_LCD_X_OFFSET;
++    display_cfg.y_offset = BOARD_LCD_Y_OFFSET;
++    display_cfg.rotation = BOARD_LCD_ROTATION;
++
++    display_cfg.port    = BOARD_LCD_SPI_PORT;
++    display_cfg.spi_clk = BOARD_LCD_SPI_CLK;
++    display_cfg.cs_pin  = BOARD_LCD_SPI_CS_PIN;
++    display_cfg.dc_pin  = BOARD_LCD_SPI_DC_PIN;
++    display_cfg.rst_pin = BOARD_LCD_SPI_RST_PIN;
++
++    display_cfg.power.pin = BOARD_LCD_POWER_PIN;
++
++    TUYA_CALL_ERR_RETURN(tdd_disp_spi_mono_st7305_set_init_seq(sg_st7305_ws42_init_seq));
++    TUYA_CALL_ERR_RETURN(tdd_disp_spi_mono_st7305_register(DISPLAY_NAME, &display_cfg));
++#endif
++
++    return rt;
++}
++
+ /**
+- * @brief Registers all the hardware peripherals (audio, button, LED) on the board.
++ * @brief Registers all the hardware peripherals (audio, button, LED, display) on the board.
+  *
+  * @return Returns OPERATE_RET_OK on success, or an appropriate error code on failure.
+  */
+@@ -112,5 +201,7 @@ OPERATE_RET board_register_hardware(void)
+ 
+     TUYA_CALL_ERR_LOG(__board_register_led());
+ 
++    TUYA_CALL_ERR_LOG(__board_register_display());
++
+     return rt;
+ }
+\ No newline at end of file
+diff --git a/src/peripherals/display/tdd_display/src/spi/tdd_disp_spi_st7305.c b/src/peripherals/display/tdd_display/src/spi/tdd_disp_spi_st7305.c
+index b62aa1d..b1a57f8 100644
+--- a/src/peripherals/display/tdd_display/src/spi/tdd_disp_spi_st7305.c
++++ b/src/peripherals/display/tdd_display/src/spi/tdd_disp_spi_st7305.c
+@@ -79,53 +79,48 @@ static uint8_t *sg_disp_init_seq = ST7305_INIT_SEQ;
+ // BIT6 BIT4 BIT2 BIT0
+ static void __tdd_st7305_convert(TDL_DISP_FRAME_BUFF_T *src_fb, TDL_DISP_FRAME_BUFF_T *dst_fb)
+ {
+-    uint16_t k = 0, i = 0, j = 0, y = 0;
++    uint16_t i = 0, j = 0;
+     uint8_t b1 = 0, b2 = 0, mix = 0;
+-    uint32_t src_width_bytes = 0, offset = 0, dst_width_bytes = 0;
++    uint32_t k = 0, row_end = 0, src_width_bytes = 0, dst_width_bytes = 0;
+ 
+     if (NULL == src_fb || NULL == dst_fb) {
+         return;
+     }
+ 
+-    offset = GET_ROUND_UP_TO_MULTI_OF_3((dst_fb->width + 3) / 4) - (dst_fb->width / 4);
+-    src_width_bytes = src_fb->width / 8;
+-    dst_width_bytes = dst_fb->width / 8;
++    // Source rows are byte aligned, so a 300px wide buffer has 38 bytes per row, not 37.
++    src_width_bytes = (src_fb->width + 7) / 8;
++    // Each destination byte packs 4 columns x 2 rows, and rows are written 3 bytes at a time.
++    dst_width_bytes = GET_ROUND_UP_TO_MULTI_OF_3((dst_fb->width + 3) / 4);
+ 
+     for (i = 0; i < dst_fb->height; i += 2) {
+         if (i >= (src_fb->height)) {
+             break; // Skip rows outside the source framebuffer
+         }
+ 
+-        k += offset;
+-        for (j = 0; j < dst_width_bytes; j += 3) {
+-
+-            for (y = 0; y < 3; y++) {
+-                if((j + y) >= dst_width_bytes) {
+-                    break; // Avoid out of bounds
+-                }
+-
+-                if ((j + y) >= src_width_bytes) {
+-                    k += 2;
+-                    continue; // Avoid out of bounds
+-                }
+-
+-                b1 = src_fb->frame[i * src_width_bytes + j + y];
+-                b2 = src_fb->frame[(i + 1) * src_width_bytes + j + y];
+-
+-                // First 4 bits
+-                mix = 0;
+-                mix = ((b1 & 0x01) << 7) | ((b2 & 0x01) << 6) | ((b1 & 0x02) << 4) | ((b2 & 0x02) << 3) |
+-                      ((b1 & 0x04) << 1) | ((b2 & 0x04)) | ((b1 & 0x08) >> 2) | ((b2 & 0x08) >> 3);
+-                dst_fb->frame[k++] = mix;
+-
+-                // Second 4 bits
+-                b1 >>= 4;
+-                b2 >>= 4;
+-                mix = 0;
+-                mix = ((b1 & 0x01) << 7) | ((b2 & 0x01) << 6) | ((b1 & 0x02) << 4) | ((b2 & 0x02) << 3) |
+-                      ((b1 & 0x04) << 1) | ((b2 & 0x04)) | ((b1 & 0x08) >> 2) | ((b2 & 0x08) >> 3);
+-                dst_fb->frame[k++] = mix;
++        // Derive the row offset rather than accumulating it, so a width that is not a whole
++        // number of source bytes (300px = 37.5) cannot drift a byte per row pair.
++        k = (uint32_t)(i / 2) * dst_width_bytes;
++        row_end = k + dst_width_bytes;
++
++        for (j = 0; j < src_width_bytes && k < row_end; j++) {
++            b1 = src_fb->frame[i * src_width_bytes + j];
++            b2 = ((i + 1) < src_fb->height) ? src_fb->frame[(i + 1) * src_width_bytes + j] : 0;
++
++            // First 4 bits
++            mix = ((b1 & 0x01) << 7) | ((b2 & 0x01) << 6) | ((b1 & 0x02) << 4) | ((b2 & 0x02) << 3) |
++                  ((b1 & 0x04) << 1) | ((b2 & 0x04)) | ((b1 & 0x08) >> 2) | ((b2 & 0x08) >> 3);
++            dst_fb->frame[k++] = mix;
++
++            if (k >= row_end) {
++                break; // Trailing source bits fall outside the panel
+             }
++
++            // Second 4 bits
++            b1 >>= 4;
++            b2 >>= 4;
++            mix = ((b1 & 0x01) << 7) | ((b2 & 0x01) << 6) | ((b1 & 0x02) << 4) | ((b2 & 0x02) << 3) |
++                  ((b1 & 0x04) << 1) | ((b2 & 0x04)) | ((b1 & 0x08) >> 2) | ((b2 & 0x08) >> 3);
++            dst_fb->frame[k++] = mix;
+         }
+ 
+ 
+diff --git a/src/peripherals/display/tdd_display/src/spi/tdd_display_spi.c b/src/peripherals/display/tdd_display/src/spi/tdd_display_spi.c
+index 8e26301..5210715 100644
+--- a/src/peripherals/display/tdd_display/src/spi/tdd_display_spi.c
++++ b/src/peripherals/display/tdd_display/src/spi/tdd_display_spi.c
+@@ -207,7 +207,10 @@ static OPERATE_RET __disp_spi_send(TUYA_SPI_NUM_E port, uint8_t *data, uint32_t
+ 
+         TUYA_CALL_ERR_RETURN(tkl_spi_send(port, data + size - left_len, send_len));
+ 
+-        rt = tal_semaphore_wait(sg_disp_spi_sync[port].tx_sem, 100); 
++        /* A full 300x400 mono frame is 15000 bytes; at the low end of the supported clock
++         * range that single DMA burst needs well over 100ms. Timing out mid-frame raises CS
++         * early and desynchronises the semaphore for every frame after it. */
++        rt = tal_semaphore_wait(sg_disp_spi_sync[port].tx_sem, 1000);
+         if(rt != OPRT_OK) {
+             PR_ERR("spi tx wait timeout, port:%d len:%d\r\n", port, send_len);
+             return rt;
+diff --git a/src/peripherals/display/tdl_display/src/tdl_display_draw.c b/src/peripherals/display/tdl_display/src/tdl_display_draw.c
+index 0565fb0..dd64af6 100644
+--- a/src/peripherals/display/tdl_display/src/tdl_display_draw.c
++++ b/src/peripherals/display/tdl_display/src/tdl_display_draw.c
+@@ -43,7 +43,8 @@
+  */
+ static void __disp_mono_write_point(uint32_t x, uint32_t y, bool enable, TDL_DISP_FRAME_BUFF_T *fb)
+ {
+-    uint32_t write_byte_index = y * (fb->width/8) + x/8;
++    /* Rows are byte aligned: a 300px wide buffer is 38 bytes per row, not 37. */
++    uint32_t write_byte_index = y * ((fb->width + 7) / 8) + x/8;
+     uint8_t write_bit = x%8;
+ 
+     if (enable) {

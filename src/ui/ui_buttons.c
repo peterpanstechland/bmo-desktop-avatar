@@ -27,8 +27,14 @@
 #include "ui_avatar.h"
 #include "ui_bg_task.h"
 #include "ui_popup.h"
+#include "ui_i18n.h"
 #include "motion_engine.h"
 #include "ui_games.h"
+#include "ui_calendar.h"
+#include "ui_clock.h"
+#include "ui_rss.h"
+#include "ui_settings.h"
+#include "ui_alarm.h"
 #include "lv_vendor.h"
 
 #define BMO_POLL_MS       20  /* one pull phase per tick, so a cycle is 40 ms */
@@ -112,8 +118,8 @@ static void __act_right(void)
 
 static void __act_mid(void)
 {
-    ui_bg_task_request_full_refresh();
-    ui_popup_toast("Refreshing...");
+    ui_bg_task_request_refresh();
+    ui_popup_toast(bmo_tr(BMO_STR_REFRESHING));
 }
 
 static void __act_sw1(void)
@@ -130,7 +136,7 @@ static void __act_sw1(void)
         sg_vol_before_mute = BMO_VOL_DEFAULT;
     }
     ai_chat_set_volume(0);
-    ui_popup_toast("Muted");
+    ui_popup_toast(bmo_tr(BMO_STR_MUTED));
 }
 
 static void __act_sw2(void)
@@ -261,7 +267,7 @@ static void __netcfg_hold(uint32_t held_ms)
         return;
     }
     sg_netcfg_left = left;
-    snprintf(buf, sizeof(buf), "重置网络 %d\n松开取消", left);
+    snprintf(buf, sizeof(buf), bmo_tr(BMO_STR_NETCFG_HOLD), left);
     ui_popup_hold_show(buf);
 }
 
@@ -291,8 +297,18 @@ static void __on_cycle(int i)
         PR_NOTICE("[bmo-btn] %s P%d %s (%s)", sg_hw[i].name, (int)sg_hw[i].pin,
                   pressed ? "DOWN" : "UP", __sig_name(sig));
 
-        if (page_mgr_get_current() == PAGE_IDX_GAMES) {
+        if (ui_alarm_try_dismiss()) {
+            consumed = true;
+        } else if (page_mgr_get_current() == PAGE_IDX_GAMES) {
             consumed = games_btn_event(i, pressed ? true : false);
+        } else if (page_mgr_get_current() == PAGE_IDX_CALENDAR) {
+            consumed = calendar_btn_event(i, pressed ? true : false);
+        } else if (page_mgr_get_current() == PAGE_IDX_RSS) {
+            consumed = rss_btn_event(i, pressed ? true : false);
+        } else if (page_mgr_get_current() == PAGE_IDX_CLOCK) {
+            consumed = clock_btn_event(i, pressed ? true : false);
+        } else if (page_mgr_get_current() == PAGE_IDX_SETTINGS) {
+            consumed = settings_btn_event(i, pressed ? true : false);
         }
         if (!pressed && sg_hw[i].pin == (TUYA_GPIO_NUM_E)BMO_BTN_SW2) {
             __netcfg_cancel();

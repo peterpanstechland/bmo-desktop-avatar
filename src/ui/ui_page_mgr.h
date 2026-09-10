@@ -8,7 +8,9 @@
 #define PAGE_IDX_CLOCK    1
 #define PAGE_IDX_WEATHER  2
 #define PAGE_IDX_CALENDAR 3
-#define PAGE_IDX_GAMES    4
+#define PAGE_IDX_RSS      4
+#define PAGE_IDX_GAMES    5
+#define PAGE_IDX_SETTINGS 6
 
 typedef struct {
     const char *name;
@@ -24,7 +26,7 @@ void page_mgr_goto(int idx);
 void page_mgr_press(void);
 int  page_mgr_get_current(void);
 
-/** @return page index 0..4, or -1 if name unknown */
+/** @return page index, or -1 if name unknown */
 int page_mgr_name_to_idx(const char *page);
 
 /** @return true if @p text looks like a page-switch command and a page was selected */

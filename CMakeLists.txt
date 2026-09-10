@@ -61,17 +61,6 @@ target_include_directories(${EXAMPLE_LIB}
     )
 
 ########################################
-# Feishu calendar credentials
-########################################
-# Injected from the environment so a working secret never has to be written
-# into a tracked header. See docs/feishu-calendar.md.
-foreach(fs_var FEISHU_APP_ID FEISHU_APP_SECRET FEISHU_CAL_ID)
-    if(DEFINED ENV{${fs_var}})
-        target_compile_definitions(${EXAMPLE_LIB} PRIVATE ${fs_var}="$ENV{${fs_var}}")
-    endif()
-endforeach()
-
-########################################
 # Add subdirectory
 ########################################
 

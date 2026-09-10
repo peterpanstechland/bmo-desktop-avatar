@@ -7,7 +7,7 @@
  * button thread.
  */
 
-/** Short centred message that fades out on its own. */
+/** Short message at the bottom of the screen that fades out on its own. */
 void ui_popup_toast(const char *msg);
 
 /** Show or hide the system info panel (IP, RSSI, free heap, firmware). */

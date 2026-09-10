@@ -3,12 +3,18 @@
 
 #include "tuya_cloud_types.h"
 
-/* Replace with your Feishu app credentials before use. See docs/feishu-calendar.md */
+/*
+ * Credentials come from Kconfig (CONFIG_FEISHU_APP_ID / _APP_SECRET / _CAL_ID)
+ * and land in tuya_kconfig.h, so they live in the same gitignored config files
+ * as the Tuya license. See docs/feishu-calendar.md. The fallbacks below only
+ * matter for builds that skip Kconfig (the PC simulator); an empty app_id
+ * disables the calendar sync.
+ */
 #ifndef FEISHU_APP_ID
-#define FEISHU_APP_ID     "cli_xxxxxxxxxx"
+#define FEISHU_APP_ID     ""
 #endif
 #ifndef FEISHU_APP_SECRET
-#define FEISHU_APP_SECRET "xxxxxxxxxxxxxxxxxxxxxxxx"
+#define FEISHU_APP_SECRET ""
 #endif
 
 /* Optional. Leave empty to auto-pick the calendar shared with the bot; set it
@@ -32,10 +38,18 @@ typedef struct {
     FEISHU_CAL_EVENT_T events[FEISHU_CAL_MAX_EVENTS];
 } FEISHU_CAL_DATA_T;
 
+/** Creates the lock shared by the bg task and the MCP tool. Call once before
+ *  either of them runs. */
+OPERATE_RET feishu_cal_init(void);
+
+/**
+ * Pull the next 4 days of events. Blocks on HTTPS.
+ *
+ * @return OPRT_OK on success, OPRT_NOT_SUPPORTED when no app_id is configured
+ *         (nothing to retry), any other error is transient (no network, clock
+ *         not synced, HTTP/API failure) and worth retrying.
+ */
 OPERATE_RET feishu_cal_fetch(FEISHU_CAL_DATA_T *out);
-void        feishu_cal_request_refresh(void);
-void        feishu_cal_bind_refresh_sem(SEM_HANDLE sem);
-bool        feishu_cal_take_refresh_request(void);
 
 /**
  * Create an event on the synced calendar. day_offset counts days forward from

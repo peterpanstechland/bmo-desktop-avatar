@@ -11,6 +11,7 @@
 #include "iotdns.h"
 #include "tal_time_service.h"
 #include "feishu_cal.h"
+#include "ui_bg_task.h"
 
 #define FS_HOST            "open.feishu.cn"
 #define FS_HTTP_TIMEOUT_MS 15000
@@ -24,8 +25,6 @@ static uint32_t      sg_token_expire_ms = 0;
 static char          sg_cal_id[128]     = {0};
 static uint8_t      *sg_cacert          = NULL;
 static uint16_t      sg_cacert_len      = 0;
-static SEM_HANDLE    sg_refresh_sem     = NULL;
-static volatile bool sg_refresh_now     = false;
 static MUTEX_HANDLE  sg_lock            = NULL;
 
 /* Periodic sync runs on the background task while the MCP tool answers on the
@@ -104,6 +103,7 @@ static OPERATE_RET __http_call(const char *path, const char *method, const char 
         &response);
 
     if (http_rt != HTTP_CLIENT_SUCCESS) {
+        PR_ERR("[feishu] http %s %s failed, client_rt=%d", method, path, (int)http_rt);
         return OPRT_LINK_CORE_HTTP_CLIENT_SEND_ERROR;
     }
 
@@ -280,6 +280,24 @@ static OPERATE_RET __ensure_cal_id(const char *token, char *cal_id, size_t cal_i
 }
 
 /*
+ * Both the agenda window and a new event's start are anchored on the device
+ * clock, so nothing may go out before NTP has landed: with a 1970 clock the
+ * listing "succeeds" with zero events and the empty result gets cached.
+ */
+static OPERATE_RET __ready(void)
+{
+    if (!FEISHU_APP_ID[0] || !FEISHU_APP_SECRET[0]) {
+        PR_WARN("[feishu] CONFIG_FEISHU_APP_ID/SECRET not set, calendar sync disabled");
+        return OPRT_NOT_SUPPORTED;
+    }
+    if (OPRT_OK != tal_time_check_time_sync()) {
+        PR_WARN("[feishu] clock not synced yet, retry later");
+        return OPRT_COM_ERROR;
+    }
+    return OPRT_OK;
+}
+
+/*
  * tal_time_mktime() is the counterpart of tal_time_gmtime_r(), so it reads the
  * struct as UTC and knows nothing about the device time zone. Feeding it a
  * local wall clock silently shifts the result by the offset, which is how a
@@ -399,10 +417,7 @@ OPERATE_RET feishu_cal_fetch(FEISHU_CAL_DATA_T *out)
     }
     memset(out, 0, sizeof(*out));
 
-    if (0 == strcmp(FEISHU_APP_ID, "cli_xxxxxxxxxx")) {
-        PR_WARN("[feishu] placeholder app_id, skip fetch");
-        return OPRT_NOT_SUPPORTED;
-    }
+    TUYA_CALL_ERR_RETURN(__ready());
 
     char token[512] = {0};
     char cal_id[128] = {0};
@@ -441,10 +456,7 @@ OPERATE_RET feishu_cal_add_event(const char *title, int day_offset, int hour, in
     if (day_offset < 0 || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
         return OPRT_INVALID_PARM;
     }
-    if (0 == strcmp(FEISHU_APP_ID, "cli_xxxxxxxxxx")) {
-        PR_WARN("[feishu] placeholder app_id, skip add");
-        return OPRT_NOT_SUPPORTED;
-    }
+    TUYA_CALL_ERR_RETURN(__ready());
 
     start = __local_midnight() + (TIME_T)day_offset * 86400 + (TIME_T)hour * 3600 + (TIME_T)minute * 60;
     end   = start + (TIME_T)duration_min * 60;
@@ -530,31 +542,14 @@ OPERATE_RET feishu_cal_add_event(const char *title, int day_offset, int hour, in
 
     PR_NOTICE("[feishu] event added: %s at %02d-%02d %02d:%02d", title, tm.tm_mon + 1, tm.tm_mday,
               tm.tm_hour, tm.tm_min);
-    feishu_cal_request_refresh();
+    ui_bg_task_request_refresh();
     return OPRT_OK;
 }
 
-void feishu_cal_request_refresh(void)
+OPERATE_RET feishu_cal_init(void)
 {
-    sg_refresh_now = true;
-    if (sg_refresh_sem) {
-        tal_semaphore_post(sg_refresh_sem);
+    if (sg_lock) {
+        return OPRT_OK;
     }
-}
-
-void feishu_cal_bind_refresh_sem(SEM_HANDLE sem)
-{
-    sg_refresh_sem = sem;
-    if (!sg_lock) {
-        tal_mutex_create_init(&sg_lock);
-    }
-}
-
-bool feishu_cal_take_refresh_request(void)
-{
-    if (sg_refresh_now) {
-        sg_refresh_now = false;
-        return true;
-    }
-    return false;
+    return tal_mutex_create_init(&sg_lock);
 }

@@ -15,6 +15,8 @@
 #include "ui_page_mgr.h"
 #include "ui_buttons.h"
 #include "ui_bg_task.h"
+#include "ui_alarm.h"
+#include "ui_i18n.h"
 #include "ui_chat_overlay.h"
 #include "ui_landscape_test.h"
 
@@ -105,6 +107,7 @@ static OPERATE_RET __ui_init(void)
     lv_vendor_disp_lock();
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
+    bmo_lang_init();
     page_mgr_init();
     chat_overlay_init();
 #if defined(UI_LANDSCAPE_TEST) && (UI_LANDSCAPE_TEST == 1)
@@ -115,6 +118,7 @@ static OPERATE_RET __ui_init(void)
 
     TUYA_CALL_ERR_RETURN(ui_buttons_init());
     TUYA_CALL_ERR_RETURN(ui_bg_task_init());
+    TUYA_CALL_ERR_RETURN(ui_alarm_init());
 
     PR_NOTICE("avatar ui init ok");
     return OPRT_OK;

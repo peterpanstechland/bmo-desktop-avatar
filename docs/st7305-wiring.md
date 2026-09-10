@@ -83,16 +83,23 @@ ST7305 屏幕          T5AI-Core 开发板
 #define BOARD_LCD_POWER_PIN      TUYA_GPIO_NUM_MAX        // 无独立电源控制
 ```
 
-注册驱动（板级文件已改好，此处仅说明）：
+注册驱动。**以上宏和下面这段都在 `patches/st7305_t5ai_core_panel.patch` 里，不在本仓库的源码内**——
+原版 `boards/T5AI/TUYA_T5AI_CORE/` 完全不注册显示设备（对比一下：`TUYA_T5AI_POCKET` 才有），
+不打这个补丁 `lv_scr_act()` 会返回 NULL，`ui_main.c` 第一次调 `lv_obj_set_style_bg_color` 就空指针
+异常，表现为开机反复 `MemFault @ 0x0000000c` 重启：
 
 ```c
 #include "tdd_disp_st7305.h"
 
-// 板级文件中已定义 sg_st7305_ws42_init_seq（微雪 4.2 寸参考驱动的初始化序列），
+// 板级文件中定义 sg_st7305_ws42_init_seq（微雪 4.2 寸参考驱动的初始化序列），
 // 注册前替换掉内置的 T5AI Pocket 168x384 序列：
 tdd_disp_spi_mono_st7305_set_init_seq(sg_st7305_ws42_init_seq);
 TUYA_CALL_ERR_RETURN(tdd_disp_spi_mono_st7305_register(DISPLAY_NAME, &display_cfg));
 ```
+
+P14/P15/P16 正是 T5AI 上 SPI0 组 0 的默认引脚（`TKL_SPI0_G0_SCK_PIN` 等），所以不需要像
+`TUYA_T5AI_POCKET` 那样额外调 `tkl_io_pinmux_config`。`ENABLE_DISPLAY` 由 `src/liblvgl/Kconfig`
+经 `ENABLE_LIBLVGL` 自动选上，板级 Kconfig 无需改动。
 
 微雪序列与内置序列的主要差异：电源电压组（0xC0–0xC5）、帧率（0xB2）、栅极 EQ（0xB3）、
 NVM 载入（0xD6）。反显位保留 0x20（关）：TuyaOpen 约定位 1=黑，微雪驱动是 0x21（开）+位 1=白
@@ -109,9 +116,17 @@ NVM 载入（0xD6）。反显位保留 0x20（关）：TuyaOpen 约定位 1=黑�
 
 ## 点屏验证（黑白闪烁测试）
 
-板级代码已接入 ST7305 驱动并载入微雪 4.2 寸初始化序列
-（`C:\TuyaOpen\boards\T5AI\TUYA_T5AI_CORE\tuya_t5ai_core.c`）。
+板级代码接入 ST7305 驱动并载入微雪 4.2 寸初始化序列，改动在
+`boards/T5AI/TUYA_T5AI_CORE/tuya_t5ai_core.c`，由 `patches/st7305_t5ai_core_panel.patch` 提供。
 `fill_color` 示例已改为黑白交替（随机颜色在单色屏上几乎不变化），屏幕应每秒黑白切换一次。
+
+启动日志里这三行说明屏幕注册成功：
+
+```
+[tdd_disp_spi_st7305.c] tdd_disp_spi_st7305_register: display
+[tdd_display_spi.c] Display SPI:0 init sequence completed
+[tdd_disp_spi_st7305.c] [ST7305] Initialize display device successful.
+```
 
 ### 1. 接线完成后上电
 
@@ -144,18 +159,26 @@ tos.py flash
 
 按提示选择下载口（A）。烧录完成后复位板子，屏幕应开始黑白交替刷新。
 
-### 4. 首次点屏问题回顾（已修复）
+### 4. 首次点屏问题回顾
 
-第一次烧录后屏幕出现「约 1/3 均匀灰 + 2/3 雪花噪点」，原因有三，均已修复（2026-07-23）：
+第一次烧录后屏幕出现「约 1/3 均匀灰 + 2/3 雪花噪点」，原因有三（2026-07-23 定位）。
+下面四项全部由 `patches/st7305_t5ai_core_panel.patch` 修复，**都是 SDK 侧的改动，
+重装或升级 SDK 后必须重新打补丁**——2026-09-09 换机器时就因为漏了这个补丁而复现了全部症状
+（准确地说是更早一步：连屏幕都没注册，直接崩在 LVGL 里）：
 
 1. **列窗口偏移错误**：微雪面板列地址从 0x12 开始，此前写 0 导致大部分数据写到了
    可视区外，只有约 7/25 的列落在屏内（对应照片里那 1/3 均匀区）；没被写到的区域
    保持上电随机内容（雪花区）。已把 `BOARD_LCD_X_OFFSET` 改为 `0x12`。
 2. **初始化序列不匹配**：内置序列面向 T5AI Pocket 168×384 面板，电压/帧率/EQ 参数
    与 4.2 寸面板不同。已在板级文件加入微雪参考驱动的完整序列。
-3. **驱动字节对齐 bug**：TuyaOpen 的 ST7305 转换函数按 `width/8` 计算行距，300 不是
-   8 的倍数（300/8=37.5），逐行累积错位。已改为向上取整（38 字节/行），并同步修复
-   `tdl_display_draw.c` 中单色画点的同类问题。
+3. **驱动字节对齐 bug**：`tdd_disp_spi_st7305.c` 的 `__tdd_st7305_convert` 按 `width/8`
+   计算源行距，300 不是 8 的倍数（300/8=37.5），逐行累积错位。源帧缓冲的真实行距由
+   `tdl_display_fb_manage.c` 按 `(width+7)/8` 分配，也就是 38 字节；目标行距则是
+   `(width+3)/4` 向上取整到 3 的倍数，即 75 字节。补丁把两者都算对，并且改成由行号直接
+   推出目标偏移（原来是每行累加，一旦对不齐就会持续漂移）。`tdl_display_draw.c` 里单色
+   画点的同类问题一并修掉。
+   注意 SDK 后来重写过这个函数，上游至今仍只对「宽度能被 8 整除」的面板正确
+   （Pocket 的 168 刚好可以），所以补丁一直有必要。
 
 修完上述三项后仍剩「顶部约 37.5% 正常黑白交替、下方仍是噪点」，根因是第四个 bug：
 

@@ -12,7 +12,7 @@ A fan-made **BMO-style desktop companion** firmware for the **Tuya T5AI-Core** b
 |------|---------|
 | Display | ST7305 SPI reflective panel, landscape 400×300 logical UI |
 | Face | 13 BMO-style expressions with blink, eye dart, breathing |
-| Pages | Avatar, split-flap clock, weather, calendar (Feishu sync), games (Snake, Tetris) |
+| Pages | Avatar, split-flap clock, weather, calendar (Feishu sync), Maker RSS, games (Snake, Tetris), Settings (zh/en + OTA) |
 | Voice | Tuya AI combo mode — wake word, click, long-press PTT |
 | Buttons | D-pad (volume / page nav), centre refresh, SW1 mute, SW2 sysinfo (hold 5 s to re-provision WiFi), triangle back, green easter-egg, red talk |
 | Arms | Dual SG90/MG90S servos with motion sequences + MCP cloud tools |
@@ -57,15 +57,17 @@ Or copy the folder contents directly to `TuyaOpen/apps/tuya.ai/desktop_avatar/`.
 
 ### 3. Apply the SDK patches
 
-All three patches touch the SDK rather than this app, so they need reapplying after an SDK reinstall:
+All four patches touch the SDK rather than this app, so they need reapplying after an SDK reinstall:
 
 ```bash
 cd TuyaOpen
+git apply /path/to/bmo-desktop-avatar/patches/st7305_t5ai_core_panel.patch
 git apply /path/to/bmo-desktop-avatar/patches/lv_port_disp_landscape_180.patch
 git apply /path/to/bmo-desktop-avatar/patches/ai_chat_button_long_press.patch
 git apply /path/to/bmo-desktop-avatar/patches/tdl_button_double_click.patch
 ```
 
+- `st7305_t5ai_core_panel.patch` — **required, the firmware crash-loops without it.** Stock `TUYA_T5AI_CORE` registers no display at all, so `lv_scr_act()` returns NULL and the first LVGL style call faults on a null pointer. The patch registers the panel on the board, loads the Waveshare 4.2" init sequence, and fixes three upstream bugs that only bite on a width that is not a multiple of 8: row stride in the ST7305 conversion and in `tdl_display_draw.c`, plus a 100 ms SPI send timeout that truncates a 15 KB frame. See [docs/st7305-wiring.md](./docs/st7305-wiring.md).
 - `lv_port_disp_landscape_180.patch` — flips the software coordinate map 180° in `src/liblvgl/v9/port/lv_port_disp_full_frame.c` to match this enclosure. If your panel is mounted the other way, skip it or revert to `px = 299 - ly; py = lx;`.
 - `ai_chat_button_long_press.patch` — raises the talk button's long-press threshold from 400 ms to 700 ms. Below that a normal press registers as push-to-talk and single/double click never fire.
 - `tdl_button_double_click.patch` — fixes a missing counter reset in the `tdl_button` state machine. Without it `TDL_BUTTON_PRESS_DOUBLE_CLICK` never fires for any button, so double-click mode switching does nothing. See [docs/bmo-pins.md](./docs/bmo-pins.md) for the analysis.
@@ -82,8 +84,8 @@ cp config/TUYA_T5AI_CORE.config.example config/TUYA_T5AI_CORE.config
 `tos.py build` falls back to `app_default.config`; `tos.py config choice` uses the board template in `config/`. Fill in whichever one your workflow uses:
 
 1. **Tuya product:** set `CONFIG_TUYA_PRODUCT_ID` to your product ID from [Tuya IoT Platform](https://platform.tuya.com/).
-2. **Open SDK license:** set `CONFIG_TUYA_OPENSDK_UUID` and `CONFIG_TUYA_OPENSDK_AUTHKEY` to the license from [Tuya's purchase page](https://platform.tuya.com/purchase/index?type=6). Alternatively leave both empty and flash the license onto the device with `tos.py auth` — the firmware prefers the flashed license and never needs it at build time.
-3. **Feishu calendar (optional):** export `FEISHU_APP_ID` and `FEISHU_APP_SECRET` before building so no secret ends up in a tracked file. Grant the app access to a calendar — see [docs/feishu-calendar.md](./docs/feishu-calendar.md).
+2. **Open SDK license:** set `CONFIG_TUYA_OPENSDK_UUID` and `CONFIG_TUYA_OPENSDK_AUTHKEY` to the license from [Tuya's purchase page](https://platform.tuya.com/purchase/index?type=6). The firmware still prefers a license flashed into the device's OTP and only falls back to these two symbols, but current SDKs no longer ship a `tos.py auth` command, so on a board with empty OTP the config is the only way in. After editing either config file, re-run `tos.py config choice -c TUYA_T5AI_CORE.config` — a plain `tos.py build` reuses the cached `.config` and silently keeps the old credentials.
+3. **Feishu calendar (optional):** set `CONFIG_FEISHU_APP_ID` and `CONFIG_FEISHU_APP_SECRET` in the same two config files (leave empty to disable the sync). Grant the app access to a calendar — see [docs/feishu-calendar.md](./docs/feishu-calendar.md).
 
 Never put a license in a `*.example` file or in `include/tuya_config.h`: those are tracked by git.
 
@@ -112,7 +114,7 @@ Boot log should show `[servo] dual arm init ok (L=PWM0/P18 R=PWM1/P24, positive,
 ├── docs/             Wiring, pin map, AI agent prompt
 ├── include/          App headers
 ├── models/           3D-printable enclosure parts (.3mf)
-├── patches/          TuyaOpen SDK patches (display rotation, button timing)
+├── patches/          TuyaOpen SDK patches (panel registration, display rotation, button timing)
 ├── src/
 │   ├── ui/           BMO face, pages, buttons, weather, calendar
 │   ├── motion/       Servo PWM, motion engine, MCP, diagnostic tool

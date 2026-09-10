@@ -8,19 +8,27 @@
 
 | 值 | 必填 | 从哪来 |
 |----|------|--------|
-| `FEISHU_APP_ID` | 是 | 开发者后台 → 凭证与基础信息，形如 `cli_a1b2c3d4e5f6` |
-| `FEISHU_APP_SECRET` | 是 | 同上，注意别提交到仓库 |
-| `FEISHU_CAL_ID` | 否 | 只有自动选错日历时才需要，见下文排错 |
+| `CONFIG_FEISHU_APP_ID` | 是 | 开发者后台 → 凭证与基础信息，形如 `cli_a1b2c3d4e5f6` |
+| `CONFIG_FEISHU_APP_SECRET` | 是 | 同上，注意别提交到仓库 |
+| `CONFIG_FEISHU_CAL_ID` | 否 | 只有自动选错日历时才需要，见下文排错 |
 
-推荐用环境变量注入，`CMakeLists.txt` 会自动带进编译，不用改任何被 git 跟踪的文件：
+这三项是 Kconfig 选项，和涂鸦 PID / 授权码放在同一个地方：`app_default.config` 和 `config/TUYA_T5AI_CORE.config`（两个文件都已 gitignore，`*.example` 里保持为空）。两个文件要**同时**填，然后重新 `tos.py config choice` 再 build：
 
-```powershell
-$env:FEISHU_APP_ID     = "cli_xxxxxxxxxx"
-$env:FEISHU_APP_SECRET = "xxxxxxxxxxxxxxxxxxxxxxxx"
-python C:\TuyaOpen\tos.py build
+```
+CONFIG_FEISHU_APP_ID="cli_xxxxxxxxxx"
+CONFIG_FEISHU_APP_SECRET="xxxxxxxxxxxxxxxxxxxxxxxx"
+CONFIG_FEISHU_CAL_ID=""
 ```
 
-也可以直接改 `src/ui/feishu_cal.h` 里的宏，但那样有把密钥推上公开仓库的风险。
+如果用私有的 `bmo-desktop-avatar-secrets` 仓库管理这两个文件，填在那边再同步过来即可。`app_id` 留空就关闭日历同步，日历页只显示月历。
+
+编译后可以核对一下是否真的带进了固件：
+
+```bash
+rg FEISHU .build/include/tuya_kconfig.h
+```
+
+> 早期版本靠环境变量 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 注入，换一台机器或忘了 `export` 就静默退回占位符——现在不再支持，统一走 Kconfig。
 
 ## 配置步骤
 
@@ -118,7 +126,7 @@ $r = Invoke-RestMethod -Method Post -Uri "https://open.feishu.cn/open-apis/auth/
 
 ### 6. 编译烧录
 
-设好环境变量后重新编译烧录。开机联网后会自动拉一次，之后按 D-pad 中键可以手动刷新。
+填好 config 后重新编译烧录。开机后等时间同步完成会自动拉一次，失败（还没联网、NTP 没到）每 60 秒重试，成功后每 30 分钟随天气一起刷新；按 D-pad 中键或在日历页按绿键可以随时手动刷新。
 
 ## 语音记日程
 
@@ -140,7 +148,9 @@ $r = Invoke-RestMethod -Method Post -Uri "https://open.feishu.cn/open-apis/auth/
 
 | 日志 | 含义 | 怎么办 |
 |------|------|--------|
-| `placeholder app_id, skip fetch` | 凭证还是占位符 | 环境变量没生效，确认设了再重新 build |
+| `CONFIG_FEISHU_APP_ID/SECRET not set, calendar sync disabled` | 固件里没有凭证 | 两个 config 文件都填上，`tos.py config choice` 后重新 build，用 `rg FEISHU .build/include/tuya_kconfig.h` 核对 |
+| `clock not synced yet, retry later` | NTP 还没同步，60 秒后自动重试 | 正常，刚开机会出现一两次；一直出现说明设备没联网 |
+| `http ... failed, client_rt=N` | TLS/TCP 层就失败了 | 网络不通或 DNS 失败，看 WiFi 状态 |
 | `token rejected: code=10014` | 看 `msg`：`app id not exists` 是 app_id 错，`invalid app_secret` 是 secret 错 | 用后台复制按钮重拷，别照截图敲 |
 | `list calendars rejected` | 权限或机器人能力缺失 | 回第 2、3、4 步，注意版本要发布 |
 | `no calendar visible to the app` | 应用一个日历都看不到 | 第 5 步没做，或 acls 那步没返回 code:0 |
@@ -153,7 +163,7 @@ $r = Invoke-RestMethod -Method Post -Uri "https://open.feishu.cn/open-apis/auth/
 
 代码会打印出所有能看到的日历。选择规则是**优先选 role 不是 owner 的那个**——应用自己的空主日历 role 是 owner，你共享过来的是 reader/writer，所以正常情况下会自动选对。选中的 ID 会缓存到重启，所以这几行日志每次开机只出现一次。
 
-如果你共享了多个日历导致选错，从日志里找到对应的那条，把它的 `calendar_id` 填进 `FEISHU_CAL_ID` 环境变量，就会跳过自动选择直接用它。
+如果你共享了多个日历导致选错，从日志里找到对应的那条，把它的 `calendar_id` 填进 `CONFIG_FEISHU_CAL_ID`，就会跳过自动选择直接用它。
 
 ### 为什么不能全程用应用身份
 

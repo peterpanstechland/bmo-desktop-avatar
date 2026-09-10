@@ -15,6 +15,20 @@ config TUYA_OPENSDK_AUTHKEY
     string "TuyaOpen license authkey (empty = use the license stored in flash)"
     default ""
 
+# Feishu calendar credentials live next to the Tuya license in the gitignored
+# config files. Empty app_id disables the calendar sync entirely.
+config FEISHU_APP_ID
+    string "Feishu app_id for calendar sync (empty = disabled)"
+    default ""
+
+config FEISHU_APP_SECRET
+    string "Feishu app_secret for calendar sync"
+    default ""
+
+config FEISHU_CAL_ID
+    string "Feishu calendar_id (empty = auto-pick the calendar shared with the bot)"
+    default ""
+
 config ENABLE_BATTERY
     bool "enable the battery module"
     default n

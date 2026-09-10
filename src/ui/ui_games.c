@@ -4,10 +4,16 @@
  *
  * Menu: UP/DOWN pick the game, MID starts it, LEFT/RIGHT stay page navigation.
  * Playing: D-pad controls the game, TRI drops back to the menu.
+ *
+ * Both games draw on one shared pool of LVGL cell objects. A shadow copy of
+ * every cell's state lets a frame only touch the cells that changed; restyling
+ * all 448 cells on every tick forced a full redraw of the panel and made the
+ * D-pad feel laggy.
  */
 
 #include "ui_games.h"
 #include "ui_page_mgr.h"
+#include "ui_i18n.h"
 #include "ai_ui_icon_font.h"
 #include "tal_api.h"
 #include "lvgl.h"
@@ -32,6 +38,15 @@ typedef enum {
     GAME_MODE_TETRIS,
 } GAME_MODE_E;
 
+/* What a board cell shows. Only the bg/radius differ, so a mono panel can still
+ * tell the snake's food (round) from its body (square). */
+typedef enum {
+    CELL_EMPTY = 0,
+    CELL_BLOCK,
+    CELL_DOT,
+    CELL_UNKNOWN = 0xFF, /* shadow value that forces the next paint */
+} CELL_STATE_E;
+
 /* ---- Snake ---- */
 #define SNAKE_COLS  28
 #define SNAKE_ROWS  16
@@ -45,21 +60,36 @@ typedef struct {
     int y;
 } SNAKE_PT_T;
 
+/* Direction indices: 0 up, 1 right, 2 down, 3 left. */
+#define DIR_OPPOSITE(d) (((d) + 2) % 4)
+
 /* ---- Tetris ---- */
 #define TET_COLS  10
 #define TET_ROWS  20
 #define TET_CELL  11
 #define TET_OX    24
 #define TET_OY    36
+#define TET_TYPES 7
+#define TET_DROP_DIV 3 /* piece falls once every N timer ticks */
 
-static const int8_t TET_SHAPES[7][4][4][2] = {
-    {{{0,0},{1,0},{2,0},{3,0}}, {{0,0},{0,1},{0,2},{0,3}}, {{0,0},{1,0},{2,0},{3,0}}, {{0,0},{0,1},{0,2},{0,3}}},
-    {{{0,0},{0,1},{1,0},{1,1}}, {{0,0},{0,1},{1,0},{1,1}}, {{0,0},{0,1},{1,0},{1,1}}, {{0,0},{0,1},{1,0},{1,1}}},
-    {{{1,0},{2,0},{0,1},{1,1}}, {{0,0},{0,1},{1,1},{1,2}}, {{1,0},{2,0},{0,1},{1,1}}, {{0,0},{0,1},{1,1},{1,2}}},
-    {{{1,0},{0,1},{1,1},{2,1}}, {{0,1},{1,0},{1,1},{1,2}}, {{0,1},{1,0},{2,0},{1,1}}, {{0,0},{0,1},{0,2},{1,1}}},
-    {{{0,1},{1,1},{2,1},{2,2}}, {{0,0},{0,1},{1,1},{1,2}}, {{0,0},{1,0},{2,0},{2,1}}, {{0,0},{1,0},{1,1},{2,1}}},
-    {{{0,1},{0,2},{1,0},{1,1}}, {{0,0},{1,0},{1,1},{2,1}}, {{1,0},{2,0},{0,1},{1,1}}, {{0,0},{0,1},{1,1},{2,1}}},
-    {{{0,1},{1,1},{2,1},{1,2}}, {{0,1},{1,0},{1,1},{2,1}}, {{1,0},{2,0},{0,1},{1,1}}, {{0,0},{1,0},{1,1},{1,2}}},
+/*
+ * One rotation state per piece; the other three are computed by turning the
+ * cell coordinates inside the piece's bounding box. A hand-written 7x4 table
+ * used to sit here and three of its pieces changed shape when rotated.
+ */
+typedef struct {
+    uint8_t box;         /* side of the square the piece rotates in */
+    int8_t  cells[4][2]; /* {x, y} of each block at rotation 0 */
+} TET_PIECE_T;
+
+static const TET_PIECE_T TET_PIECES[TET_TYPES] = {
+    {4, {{0, 1}, {1, 1}, {2, 1}, {3, 1}}}, /* I */
+    {2, {{0, 0}, {1, 0}, {0, 1}, {1, 1}}}, /* O */
+    {3, {{1, 0}, {0, 1}, {1, 1}, {2, 1}}}, /* T */
+    {3, {{1, 0}, {2, 0}, {0, 1}, {1, 1}}}, /* S */
+    {3, {{0, 0}, {1, 0}, {1, 1}, {2, 1}}}, /* Z */
+    {3, {{0, 0}, {0, 1}, {1, 1}, {2, 1}}}, /* J */
+    {3, {{2, 0}, {0, 1}, {1, 1}, {2, 1}}}, /* L */
 };
 
 static lv_obj_t *sg_root = NULL;
@@ -69,7 +99,8 @@ static lv_obj_t *sg_score = NULL;
 static lv_obj_t *sg_menu_snake = NULL;
 static lv_obj_t *sg_menu_tetris = NULL;
 static lv_obj_t *sg_board = NULL;
-static lv_obj_t *sg_cells[SNAKE_COLS * SNAKE_ROWS];
+static lv_obj_t *sg_cells[SNAKE_MAX];
+static uint8_t sg_cell_state[SNAKE_MAX]; /* CELL_STATE_E currently painted */
 static lv_timer_t *sg_timer = NULL;
 
 static GAME_MODE_E sg_mode = GAME_MODE_MENU;
@@ -80,7 +111,8 @@ static int sg_points = 0;
 /* snake */
 static SNAKE_PT_T sg_snake[SNAKE_MAX];
 static int sg_snake_len;
-static int sg_dir; /* 0 up 1 right 2 down 3 left */
+static int sg_dir;       /* direction the next step will take */
+static int sg_dir_moved; /* direction the last step actually took */
 static int sg_food_x;
 static int sg_food_y;
 
@@ -91,13 +123,22 @@ static int sg_tet_rot;
 static int sg_tet_x;
 static int sg_tet_y;
 
-static void __style_cell(lv_obj_t *cell, bool filled)
+/* ------------------------------------------------------------------------- */
+/* Cell pool                                                                 */
+/* ------------------------------------------------------------------------- */
+
+static void __style_cell_static(lv_obj_t *cell)
 {
-    lv_obj_set_style_bg_color(cell, filled ? lv_color_black() : lv_color_white(), 0);
     lv_obj_set_style_border_width(cell, 1, 0);
     lv_obj_set_style_border_color(cell, lv_color_black(), 0);
-    lv_obj_set_style_radius(cell, 0, 0);
     lv_obj_set_style_pad_all(cell, 0, 0);
+    lv_obj_clear_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+static void __style_cell_state(lv_obj_t *cell, uint8_t state)
+{
+    lv_obj_set_style_bg_color(cell, state == CELL_EMPTY ? lv_color_white() : lv_color_black(), 0);
+    lv_obj_set_style_radius(cell, state == CELL_DOT ? LV_RADIUS_CIRCLE : 0, 0);
 }
 
 static void __set_score(const char *txt)
@@ -134,56 +175,61 @@ static void __show_menu_ui(bool show)
              : lv_obj_add_flag(sg_menu_tetris, LV_OBJ_FLAG_HIDDEN);
     }
     if (sg_hint) {
-        lv_label_set_text(sg_hint, show ? "Up/Down pick   Mid start   Left/Right page"
-                                        : "Triangle to quit");
+        lv_label_set_text(sg_hint, show ? bmo_tr(BMO_STR_GAMES_HINT)
+                                        : bmo_tr(BMO_STR_GAMES_HINT_IDLE));
     }
 }
 
+/* Hiding the board container hides every cell with it. */
 static void __board_show(bool show)
 {
-    int i;
-
     if (!sg_board) {
         return;
     }
     show ? lv_obj_clear_flag(sg_board, LV_OBJ_FLAG_HIDDEN) : lv_obj_add_flag(sg_board, LV_OBJ_FLAG_HIDDEN);
-    for (i = 0; i < (int)(sizeof(sg_cells) / sizeof(sg_cells[0])); i++) {
-        if (sg_cells[i]) {
-            show ? lv_obj_clear_flag(sg_cells[i], LV_OBJ_FLAG_HIDDEN)
-                 : lv_obj_add_flag(sg_cells[i], LV_OBJ_FLAG_HIDDEN);
-        }
-    }
 }
 
+/* Arrange the first cols*rows cells as a grid and park the rest. Resets the
+ * shadow so the first paint after a layout touches every visible cell. */
 static void __layout_cells(int cols, int rows, int cell, int ox, int oy)
 {
     int i;
+    int used = cols * rows;
 
-    for (i = 0; i < (int)(sizeof(sg_cells) / sizeof(sg_cells[0])); i++) {
+    for (i = 0; i < SNAKE_MAX; i++) {
         if (!sg_cells[i]) {
             continue;
         }
-        if ((i % cols) < cols && (i / cols) < rows) {
+        if (i < used) {
             lv_obj_set_size(sg_cells[i], cell, cell);
             lv_obj_set_pos(sg_cells[i], ox + (i % cols) * cell, oy + (i / cols) * cell);
-            __style_cell(sg_cells[i], false);
             lv_obj_clear_flag(sg_cells[i], LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(sg_cells[i], LV_OBJ_FLAG_HIDDEN);
         }
     }
+    memset(sg_cell_state, CELL_UNKNOWN, sizeof(sg_cell_state));
 }
 
+/* Push a cols*rows map of CELL_STATE_E onto the pool, touching changed cells only. */
 static void __paint_cell_grid(int cols, int rows, const uint8_t *map)
 {
     int i;
+    int used = cols * rows;
 
-    for (i = 0; i < cols * rows; i++) {
-        if (sg_cells[i]) {
-            __style_cell(sg_cells[i], map && map[i] != 0);
+    for (i = 0; i < used && i < SNAKE_MAX; i++) {
+        uint8_t want = map ? map[i] : CELL_EMPTY;
+
+        if (sg_cells[i] && sg_cell_state[i] != want) {
+            __style_cell_state(sg_cells[i], want);
+            sg_cell_state[i] = want;
         }
     }
 }
+
+/* ------------------------------------------------------------------------- */
+/* Snake                                                                     */
+/* ------------------------------------------------------------------------- */
 
 static bool __snake_cell_free(int x, int y)
 {
@@ -201,6 +247,10 @@ static void __snake_place_food(void)
 {
     int tries = 0;
 
+    if (sg_snake_len >= SNAKE_MAX) {
+        sg_food_x = sg_food_y = -1;
+        return;
+    }
     do {
         sg_food_x = rand() % SNAKE_COLS;
         sg_food_y = rand() % SNAKE_ROWS;
@@ -209,18 +259,18 @@ static void __snake_place_food(void)
 
 static void __snake_render(void)
 {
-    uint8_t map[SNAKE_COLS * SNAKE_ROWS];
+    uint8_t map[SNAKE_MAX];
     int i;
 
-    memset(map, 0, sizeof(map));
+    memset(map, CELL_EMPTY, sizeof(map));
     for (i = 0; i < sg_snake_len; i++) {
         if (sg_snake[i].x >= 0 && sg_snake[i].x < SNAKE_COLS && sg_snake[i].y >= 0 &&
             sg_snake[i].y < SNAKE_ROWS) {
-            map[sg_snake[i].y * SNAKE_COLS + sg_snake[i].x] = 1;
+            map[sg_snake[i].y * SNAKE_COLS + sg_snake[i].x] = CELL_BLOCK;
         }
     }
     if (sg_food_x >= 0 && sg_food_y >= 0) {
-        map[sg_food_y * SNAKE_COLS + sg_food_x] = 1;
+        map[sg_food_y * SNAKE_COLS + sg_food_x] = CELL_DOT;
     }
     __paint_cell_grid(SNAKE_COLS, SNAKE_ROWS, map);
 }
@@ -232,6 +282,7 @@ static void __snake_start(void)
     sg_points = 0;
     sg_snake_len = 3;
     sg_dir = 1;
+    sg_dir_moved = sg_dir;
     sg_snake[0].x = 5;
     sg_snake[0].y = SNAKE_ROWS / 2;
     sg_snake[1].x = 4;
@@ -246,9 +297,14 @@ static void __snake_start(void)
     __snake_render();
 }
 
+/*
+ * Reversal is judged against the direction the snake last *moved*, not the
+ * one last requested. Comparing against the request let "up, then left" inside
+ * one tick turn a rightward snake straight back into its own neck.
+ */
 static void __snake_set_dir(int nd)
 {
-    if ((sg_dir + 2) % 4 == nd) {
+    if (DIR_OPPOSITE(sg_dir_moved) == nd) {
         return;
     }
     sg_dir = nd;
@@ -257,7 +313,8 @@ static void __snake_set_dir(int nd)
 static void __snake_step(void)
 {
     SNAKE_PT_T head;
-    int i;
+    bool eats;
+    int i, last;
 
     if (sg_mode != GAME_MODE_SNAKE || sg_over) {
         return;
@@ -279,7 +336,13 @@ static void __snake_step(void)
         __set_score("Snake over - Green retry");
         return;
     }
-    for (i = 0; i < sg_snake_len; i++) {
+
+    eats = (head.x == sg_food_x && head.y == sg_food_y);
+
+    /* The tail cell is vacated by this very step unless the snake grows, so
+     * moving into it is legal. */
+    last = eats ? sg_snake_len : sg_snake_len - 1;
+    for (i = 0; i < last; i++) {
         if (sg_snake[i].x == head.x && sg_snake[i].y == head.y) {
             sg_over = true;
             __set_score("Snake over - Green retry");
@@ -287,34 +350,82 @@ static void __snake_step(void)
         }
     }
 
-    for (i = sg_snake_len; i > 0; i--) {
+    /* Shift the body back one slot. Never write past the array even when the
+     * snake has filled the board. */
+    last = (sg_snake_len < SNAKE_MAX) ? sg_snake_len : SNAKE_MAX - 1;
+    for (i = last; i > 0; i--) {
         sg_snake[i] = sg_snake[i - 1];
     }
     sg_snake[0] = head;
+    sg_dir_moved = sg_dir;
 
-    if (head.x == sg_food_x && head.y == sg_food_y) {
-        sg_snake_len++;
-        if (sg_snake_len > SNAKE_MAX) {
-            sg_snake_len = SNAKE_MAX;
+    if (eats) {
+        if (sg_snake_len < SNAKE_MAX) {
+            sg_snake_len++;
         }
         sg_points += 10;
-        __set_score_fmt("Snake %d", sg_points);
-        __snake_place_food();
+        if (sg_snake_len >= SNAKE_MAX) {
+            sg_over = true;
+            sg_food_x = sg_food_y = -1;
+            __set_score("Snake full! - Green retry");
+        } else {
+            __set_score_fmt("Snake %d", sg_points);
+            __snake_place_food();
+        }
     }
     __snake_render();
 }
 
+static void __snake_input(int btn)
+{
+    if (sg_over) {
+        return;
+    }
+    if (btn == BTN_UP) {
+        __snake_set_dir(0);
+    } else if (btn == BTN_RIGHT) {
+        __snake_set_dir(1);
+    } else if (btn == BTN_DOWN) {
+        __snake_set_dir(2);
+    } else if (btn == BTN_LEFT) {
+        __snake_set_dir(3);
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Tetris                                                                    */
+/* ------------------------------------------------------------------------- */
+
+/* Block b of piece `type` at rotation `rot`, relative to the piece origin.
+ * Clockwise turn inside an N-box: (x, y) -> (N-1-y, x). */
+static void __tet_cell(int type, int rot, int b, int *x, int *y)
+{
+    const TET_PIECE_T *p = &TET_PIECES[type];
+    int cx = p->cells[b][0];
+    int cy = p->cells[b][1];
+    int r;
+
+    for (r = 0; r < (rot & 3); r++) {
+        int t = cx;
+        cx = p->box - 1 - cy;
+        cy = t;
+    }
+    *x = cx;
+    *y = cy;
+}
+
 static bool __tet_collide_piece(int px, int py, int rot)
 {
-    int b;
+    int b, x, y;
 
     for (b = 0; b < 4; b++) {
-        int x = px + TET_SHAPES[sg_tet_type][rot][b][0];
-        int y = py + TET_SHAPES[sg_tet_type][rot][b][1];
+        __tet_cell(sg_tet_type, rot, b, &x, &y);
+        x += px;
+        y += py;
         if (x < 0 || x >= TET_COLS || y < 0 || y >= TET_ROWS) {
             return true;
         }
-        if (y >= 0 && sg_tet_board[y][x]) {
+        if (sg_tet_board[y][x]) {
             return true;
         }
     }
@@ -323,11 +434,12 @@ static bool __tet_collide_piece(int px, int py, int rot)
 
 static void __tet_merge_piece(void)
 {
-    int b;
+    int b, x, y;
 
     for (b = 0; b < 4; b++) {
-        int x = sg_tet_x + TET_SHAPES[sg_tet_type][sg_tet_rot][b][0];
-        int y = sg_tet_y + TET_SHAPES[sg_tet_type][sg_tet_rot][b][1];
+        __tet_cell(sg_tet_type, sg_tet_rot, b, &x, &y);
+        x += sg_tet_x;
+        y += sg_tet_y;
         if (y >= 0 && y < TET_ROWS && x >= 0 && x < TET_COLS) {
             sg_tet_board[y][x] = 1;
         }
@@ -354,15 +466,15 @@ static void __tet_clear_lines(void)
         sg_points += 100;
         memmove(&sg_tet_board[1][0], &sg_tet_board[0][0], sizeof(sg_tet_board[0]) * y);
         memset(sg_tet_board[0], 0, sizeof(sg_tet_board[0]));
-        y++;
+        y++; /* the row that fell into this slot still needs checking */
     }
 }
 
 static void __tet_spawn(void)
 {
-    sg_tet_type = rand() % 7;
+    sg_tet_type = rand() % TET_TYPES;
     sg_tet_rot = 0;
-    sg_tet_x = TET_COLS / 2 - 2;
+    sg_tet_x = (TET_COLS - TET_PIECES[sg_tet_type].box) / 2;
     sg_tet_y = 0;
     if (__tet_collide_piece(sg_tet_x, sg_tet_y, sg_tet_rot)) {
         sg_over = true;
@@ -375,19 +487,20 @@ static void __tet_render(void)
     uint8_t map[TET_COLS * TET_ROWS];
     int y, x, b;
 
-    memset(map, 0, sizeof(map));
+    memset(map, CELL_EMPTY, sizeof(map));
     for (y = 0; y < TET_ROWS; y++) {
         for (x = 0; x < TET_COLS; x++) {
             if (sg_tet_board[y][x]) {
-                map[y * TET_COLS + x] = 1;
+                map[y * TET_COLS + x] = CELL_BLOCK;
             }
         }
     }
     for (b = 0; b < 4; b++) {
-        int x = sg_tet_x + TET_SHAPES[sg_tet_type][sg_tet_rot][b][0];
-        int y = sg_tet_y + TET_SHAPES[sg_tet_type][sg_tet_rot][b][1];
+        __tet_cell(sg_tet_type, sg_tet_rot, b, &x, &y);
+        x += sg_tet_x;
+        y += sg_tet_y;
         if (y >= 0 && y < TET_ROWS && x >= 0 && x < TET_COLS) {
-            map[y * TET_COLS + x] = 1;
+            map[y * TET_COLS + x] = CELL_BLOCK;
         }
     }
     __paint_cell_grid(TET_COLS, TET_ROWS, map);
@@ -407,6 +520,15 @@ static void __tet_start(void)
     __tet_render();
 }
 
+/* Piece cannot fall any further: fix it, score, bring in the next one. */
+static void __tet_lock_piece(void)
+{
+    __tet_merge_piece();
+    __tet_clear_lines();
+    __set_score_fmt("Tetris %d", sg_points);
+    __tet_spawn();
+}
+
 static void __tet_step(void)
 {
     if (sg_mode != GAME_MODE_TETRIS || sg_over) {
@@ -415,13 +537,45 @@ static void __tet_step(void)
     if (!__tet_collide_piece(sg_tet_x, sg_tet_y + 1, sg_tet_rot)) {
         sg_tet_y++;
     } else {
-        __tet_merge_piece();
-        __tet_clear_lines();
-        __set_score_fmt("Tetris %d", sg_points);
-        __tet_spawn();
+        __tet_lock_piece();
     }
     __tet_render();
 }
+
+static void __tet_input(int btn)
+{
+    if (sg_over) {
+        return;
+    }
+    if (btn == BTN_LEFT && !__tet_collide_piece(sg_tet_x - 1, sg_tet_y, sg_tet_rot)) {
+        sg_tet_x--;
+    } else if (btn == BTN_RIGHT && !__tet_collide_piece(sg_tet_x + 1, sg_tet_y, sg_tet_rot)) {
+        sg_tet_x++;
+    } else if (btn == BTN_UP) {
+        int nr = (sg_tet_rot + 1) % 4;
+        if (!__tet_collide_piece(sg_tet_x, sg_tet_y, nr)) {
+            sg_tet_rot = nr;
+        } else if (!__tet_collide_piece(sg_tet_x - 1, sg_tet_y, nr)) {
+            /* simple wall kick so pieces can still turn against an edge */
+            sg_tet_x--;
+            sg_tet_rot = nr;
+        } else if (!__tet_collide_piece(sg_tet_x + 1, sg_tet_y, nr)) {
+            sg_tet_x++;
+            sg_tet_rot = nr;
+        }
+    } else if (btn == BTN_DOWN) {
+        if (!__tet_collide_piece(sg_tet_x, sg_tet_y + 1, sg_tet_rot)) {
+            sg_tet_y++;
+        } else {
+            __tet_lock_piece();
+        }
+    }
+    __tet_render();
+}
+
+/* ------------------------------------------------------------------------- */
+/* Page                                                                      */
+/* ------------------------------------------------------------------------- */
 
 static void __return_menu(void)
 {
@@ -454,7 +608,7 @@ static void __timer_cb(lv_timer_t *timer)
     if (sg_mode == GAME_MODE_SNAKE) {
         __snake_step();
     } else if (sg_mode == GAME_MODE_TETRIS) {
-        if (++tet_div >= 3) {
+        if (++tet_div >= TET_DROP_DIV) {
             tet_div = 0;
             __tet_step();
         }
@@ -482,7 +636,7 @@ void games_page_create(lv_obj_t *parent)
     sg_title = lv_label_create(sg_root);
     lv_obj_set_style_text_font(sg_title, font, 0);
     lv_obj_set_style_text_color(sg_title, lv_color_black(), 0);
-    lv_label_set_text(sg_title, "Games");
+    lv_label_set_text(sg_title, bmo_tr(BMO_STR_GAMES_TITLE));
     lv_obj_align(sg_title, LV_ALIGN_TOP_MID, 0, 6);
 
     sg_score = lv_label_create(sg_root);
@@ -510,14 +664,17 @@ void games_page_create(lv_obj_t *parent)
     lv_obj_set_size(sg_board, LV_HOR_RES, LV_VER_RES);
     lv_obj_set_style_bg_opa(sg_board, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(sg_board, 0, 0);
+    lv_obj_set_style_pad_all(sg_board, 0, 0);
     lv_obj_clear_flag(sg_board, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(sg_board, LV_OBJ_FLAG_HIDDEN);
 
-    for (i = 0; i < (int)(sizeof(sg_cells) / sizeof(sg_cells[0])); i++) {
+    for (i = 0; i < SNAKE_MAX; i++) {
         sg_cells[i] = lv_obj_create(sg_board);
         lv_obj_add_flag(sg_cells[i], LV_OBJ_FLAG_HIDDEN);
-        __style_cell(sg_cells[i], false);
+        __style_cell_static(sg_cells[i]);
+        __style_cell_state(sg_cells[i], CELL_EMPTY);
     }
+    memset(sg_cell_state, CELL_UNKNOWN, sizeof(sg_cell_state));
 
     __menu_refresh();
     __show_menu_ui(true);
@@ -561,49 +718,6 @@ void games_page_on_press(void)
 bool games_is_playing(void)
 {
     return sg_mode == GAME_MODE_SNAKE || sg_mode == GAME_MODE_TETRIS;
-}
-
-static void __snake_input(int btn)
-{
-    if (sg_over) {
-        return;
-    }
-    if (btn == BTN_UP) {
-        __snake_set_dir(0);
-    } else if (btn == BTN_RIGHT) {
-        __snake_set_dir(1);
-    } else if (btn == BTN_DOWN) {
-        __snake_set_dir(2);
-    } else if (btn == BTN_LEFT) {
-        __snake_set_dir(3);
-    }
-}
-
-static void __tet_input(int btn)
-{
-    if (sg_over) {
-        return;
-    }
-    if (btn == BTN_LEFT && !__tet_collide_piece(sg_tet_x - 1, sg_tet_y, sg_tet_rot)) {
-        sg_tet_x--;
-    } else if (btn == BTN_RIGHT && !__tet_collide_piece(sg_tet_x + 1, sg_tet_y, sg_tet_rot)) {
-        sg_tet_x++;
-    } else if (btn == BTN_UP) {
-        int nr = (sg_tet_rot + 1) % 4;
-        if (!__tet_collide_piece(sg_tet_x, sg_tet_y, nr)) {
-            sg_tet_rot = nr;
-        }
-    } else if (btn == BTN_DOWN) {
-        if (!__tet_collide_piece(sg_tet_x, sg_tet_y + 1, sg_tet_rot)) {
-            sg_tet_y++;
-        } else {
-            __tet_merge_piece();
-            __tet_clear_lines();
-            __set_score_fmt("Tetris %d", sg_points);
-            __tet_spawn();
-        }
-    }
-    __tet_render();
 }
 
 /** Runs with the display lock held. @return true if the games page owns the key. */

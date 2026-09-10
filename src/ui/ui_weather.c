@@ -9,6 +9,7 @@
 
 #include <string.h>
 #include "tal_api.h"
+#include "ui_i18n.h"
 #include "lvgl.h"
 #include "ai_ui_icon_font.h"
 #include "ui_weather.h"
@@ -91,17 +92,20 @@ static WX_ICON_E __icon_of(const char *cond)
     if (!cond || !cond[0]) {
         return WX_CLOUD;
     }
-    /* Checked most specific first: "雷阵雨" must not fall through to rain. */
-    if (strstr(cond, "雷")) {
+    /* Match both zh cloud strings and EN labels from ui_bg_task. */
+    if (strstr(cond, "雷") || strstr(cond, "Thunder") || strstr(cond, "thunder")) {
         return WX_THUNDER;
     }
-    if (strstr(cond, "雪")) {
+    if (strstr(cond, "雪") || strstr(cond, "Snow") || strstr(cond, "snow")) {
         return WX_SNOW;
     }
-    if (strstr(cond, "雨")) {
+    if (strstr(cond, "雨") || strstr(cond, "Rain") || strstr(cond, "rain") ||
+        strstr(cond, "Shower") || strstr(cond, "shower")) {
         return WX_RAIN;
     }
-    if (strstr(cond, "云") || strstr(cond, "阴") || strstr(cond, "雾") || strstr(cond, "霾")) {
+    if (strstr(cond, "云") || strstr(cond, "阴") || strstr(cond, "雾") || strstr(cond, "霾") ||
+        strstr(cond, "Cloud") || strstr(cond, "cloud") || strstr(cond, "Overcast") ||
+        strstr(cond, "Fog") || strstr(cond, "Haze") || strstr(cond, "Unknown")) {
         return WX_CLOUD;
     }
     return WX_SUN;
@@ -225,7 +229,7 @@ void weather_page_create(lv_obj_t *parent)
     lv_obj_clear_flag(sg_root, LV_OBJ_FLAG_SCROLLABLE);
 
     hdr = __label(sg_root, text_font, lv_color_black());
-    lv_label_set_text(hdr, "天气");
+    lv_label_set_text(hdr, bmo_tr(BMO_STR_WX_TITLE));
     lv_obj_set_pos(hdr, 12, HDR_Y);
 
     __solid(sg_root, 12, RULE1_Y, LV_HOR_RES - 24, 2, 0);
@@ -245,16 +249,16 @@ void weather_page_create(lv_obj_t *parent)
     sg_cond = __label(sg_root, text_font, lv_color_black());
     lv_obj_set_size(sg_cond, TEMP_W, LV_SIZE_CONTENT);
     lv_obj_set_style_text_align(sg_cond, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(sg_cond, "加载中");
+    lv_label_set_text(sg_cond, bmo_tr(BMO_STR_WX_LOADING));
     lv_obj_set_pos(sg_cond, TEMP_X, COND_Y);
 
     for (int i = 0; i < 3; i++) {
         sg_stat[i] = __label(sg_root, text_font, lv_color_black());
         lv_obj_set_pos(sg_stat[i], STAT_X, STAT_Y + i * STAT_LH);
     }
-    lv_label_set_text(sg_stat[0], "最高 --");
-    lv_label_set_text(sg_stat[1], "最低 --");
-    lv_label_set_text(sg_stat[2], "湿度 --");
+    lv_label_set_text(sg_stat[0], bmo_lang_get()==BMO_LANG_EN ? "Hi --" : "最高 --");
+    lv_label_set_text(sg_stat[1], bmo_lang_get()==BMO_LANG_EN ? "Lo --" : "最低 --");
+    lv_label_set_text(sg_stat[2], bmo_lang_get()==BMO_LANG_EN ? "Hum --" : "湿度 --");
 
     for (int i = 0; i < 3; i++) {
         sg_fc[i] = __label(sg_root, text_font, lv_color_black());
@@ -291,7 +295,7 @@ void weather_page_destroy(void)
 
 void weather_page_on_press(void)
 {
-    ui_bg_task_request_weather_refresh();
+    ui_bg_task_request_refresh();
 }
 
 void weather_page_update(const UI_WEATHER_DATA_T *data)
@@ -302,10 +306,10 @@ void weather_page_update(const UI_WEATHER_DATA_T *data)
 
     if (!data->valid) {
         lv_label_set_text(sg_temp, "--°");
-        lv_label_set_text(sg_cond, "暂无数据");
-        lv_label_set_text(sg_stat[0], "最高 --");
-        lv_label_set_text(sg_stat[1], "最低 --");
-        lv_label_set_text(sg_stat[2], "湿度 --");
+        lv_label_set_text(sg_cond, bmo_tr(BMO_STR_WX_NO_DATA));
+        lv_label_set_text(sg_stat[0], bmo_lang_get()==BMO_LANG_EN ? "Hi --" : "最高 --");
+        lv_label_set_text(sg_stat[1], bmo_lang_get()==BMO_LANG_EN ? "Lo --" : "最低 --");
+        lv_label_set_text(sg_stat[2], bmo_lang_get()==BMO_LANG_EN ? "Hum --" : "湿度 --");
         for (int i = 0; i < 3; i++) {
             lv_label_set_text(sg_fc[i], "");
         }
@@ -315,9 +319,9 @@ void weather_page_update(const UI_WEATHER_DATA_T *data)
 
     lv_label_set_text_fmt(sg_temp, "%d°", data->temp);
     lv_label_set_text(sg_cond, data->condition);
-    lv_label_set_text_fmt(sg_stat[0], "最高 %d°", data->hi);
-    lv_label_set_text_fmt(sg_stat[1], "最低 %d°", data->lo);
-    lv_label_set_text_fmt(sg_stat[2], "湿度 %d%%", data->humi);
+    lv_label_set_text_fmt(sg_stat[0], bmo_tr(BMO_STR_WX_HI), data->hi);
+    lv_label_set_text_fmt(sg_stat[1], bmo_tr(BMO_STR_WX_LO), data->lo);
+    lv_label_set_text_fmt(sg_stat[2], bmo_tr(BMO_STR_WX_HUMI), data->humi);
     for (int i = 0; i < 3; i++) {
         lv_label_set_text(sg_fc[i], data->forecast[i]);
     }
