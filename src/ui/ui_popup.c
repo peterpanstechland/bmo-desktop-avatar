@@ -13,7 +13,7 @@
 #include "ui_popup.h"
 
 #ifndef PROJECT_VERSION
-#define PROJECT_VERSION "1.0.0"
+#define PROJECT_VERSION "1.0.2"
 #endif
 
 #define TOAST_HOLD_MS   1500

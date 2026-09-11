@@ -1,7 +1,7 @@
 # Copy to app_default.config and fill in your product ID and license.
 # app_default.config is gitignored, so credentials stay out of the repo.
 # Leave the license empty to use the one flashed by `tos.py auth` instead.
-CONFIG_PROJECT_VERSION="1.0.1"
+CONFIG_PROJECT_VERSION="1.0.2"
 CONFIG_TUYA_PRODUCT_ID="your_product_id_here"
 CONFIG_TUYA_OPENSDK_UUID=""
 CONFIG_TUYA_OPENSDK_AUTHKEY=""

@@ -61,11 +61,13 @@ git apply /path/to/bmo-desktop-avatar/patches/st7305_t5ai_core_panel.patch
 git apply /path/to/bmo-desktop-avatar/patches/lv_port_disp_landscape_180.patch
 git apply /path/to/bmo-desktop-avatar/patches/ai_chat_button_long_press.patch
 git apply /path/to/bmo-desktop-avatar/patches/tdl_button_double_click.patch
+git apply /path/to/bmo-desktop-avatar/patches/board_chat_button_p12.patch
 ```
 
 - `st7305_t5ai_core_panel.patch`：**必打，不打固件会开机崩溃重启死循环。** 原版 `TUYA_T5AI_CORE` 板级代码根本不注册显示设备，`lv_scr_act()` 返回 NULL，第一次调 LVGL 样式接口就空指针异常。这个补丁在板级注册屏幕、载入微雪 4.2 寸初始化序列，并修掉三个只在「宽度不是 8 的倍数」时才暴露的上游 bug：ST7305 转换函数和 `tdl_display_draw.c` 的行距取整、以及会把 15KB 整帧截断的 100ms SPI 发送超时。详见 [docs/st7305-wiring.md](./docs/st7305-wiring.md)。
 - `lv_port_disp_landscape_180.patch`：本外壳的安装方式需要把 LVGL 坐标映射翻转 180°，目标文件 `src/liblvgl/v9/port/lv_port_disp_full_frame.c`。屏幕装反的话可以跳过。
 - `ai_chat_button_long_press.patch`：把红键的长按判定从 400ms 放宽到 700ms，否则正常按一下就被判成长按对讲，单击和双击都触发不了。
+- `board_chat_button_p12.patch`：stock Core 把 `ai_chat_button` 挂在板载 P29；BMO 面板红圆在 P12（active-high），不打这个补丁红键完全没反应。
 - `tdl_button_double_click.patch`：修 `tdl_button` 状态机漏清零计数器的问题，不打这个补丁双击事件永远不会触发（红键双击切模式失效）。细节见 [docs/bmo-pins.md](./docs/bmo-pins.md)。
 
 ### 4. 配置密钥

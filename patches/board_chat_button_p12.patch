@@ -1,0 +1,26 @@
+# Apply on top of st7305_t5ai_core_panel.patch (or any tree where BOARD_BUTTON_PIN is still P29).
+# Moves ai_chat_button from stock Core onboard P29 to BMO panel red circle P12 (active-high).
+--- a/boards/T5AI/TUYA_T5AI_CORE/tuya_t5ai_core.c
++++ b/boards/T5AI/TUYA_T5AI_CORE/tuya_t5ai_core.c
+@@ -18,8 +18,11 @@
+ #define BOARD_SPEAKER_EN_PIN TUYA_GPIO_NUM_39
+ 
+-#define BOARD_BUTTON_PIN       TUYA_GPIO_NUM_29
+-#define BOARD_BUTTON_ACTIVE_LV TUYA_GPIO_LEVEL_LOW
++/* BMO front-panel red talk button (docs/bmo-pins.md). Stock T5AI-Core used
++ * P29 (on-board button); the panel red circle is wired to P12. Same module as
++ * GREEN/TRI: COM≈3.3V, press drives the GPIO high. */
++#define BOARD_BUTTON_PIN       TUYA_GPIO_NUM_12
++#define BOARD_BUTTON_ACTIVE_LV TUYA_GPIO_LEVEL_HIGH
+ 
+ #define BOARD_LED_PIN       TUYA_GPIO_NUM_9
+ #define BOARD_LED_ACTIVE_LV TUYA_GPIO_LEVEL_HIGH
+@@ -127,7 +130,7 @@ static OPERATE_RET __board_register_button(void)
+         .pin = BOARD_BUTTON_PIN,
+         .level = BOARD_BUTTON_ACTIVE_LV,
+         .mode  = BUTTON_IRQ_MODE,
+-        .pin_type.irq_edge = TUYA_GPIO_IRQ_FALL,
++        .pin_type.irq_edge = TUYA_GPIO_IRQ_RISE,
+     };
+ 
+     TUYA_CALL_ERR_RETURN(tdd_gpio_button_register(BUTTON_NAME, &button_hw_cfg));

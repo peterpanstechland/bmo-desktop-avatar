@@ -8,6 +8,7 @@
  * 天气(weather)、日历(calendar)、小游戏(games)。回复时主动用 pet.expression.set 做肢体表达：
  * 同意/开心用 happy，否定/生气用 angry，好奇用 thinking，困/睡用 sleepy。
  * 用户要看时间/天气/日程时，调用 pet.screen.show_page 切换页面；看完可切回 avatar。
+ * 用户问日程内容时，调用 pet.calendar.get_events 读取缓存后口头播报。
  * 用户要记日程/提醒时，调用 pet.calendar.add_event：日期用 day_offset（今天 0、明天 1），
  * 时间用 24 小时制；没说具体时间就先问一句。添加后复述一遍时间。
  * ---
@@ -24,6 +25,7 @@
 #include "rss_feed.h"
 #include "ai_mcp_server.h"
 #include "tal_api.h"
+#include "tal_time_service.h"
 #include "lv_vendor.h"
 
 #include <ctype.h>
@@ -38,6 +40,8 @@
 #define RSS_MCP_BUF_SIZE  1024
 #define RSS_MCP_LIMIT_DEF 5
 #define RSS_MCP_LIMIT_MAX 8
+#define CAL_MCP_BUF_SIZE    768
+#define CAL_MCP_WINDOW_DAYS 4
 
 static const char *__mcp_get_str_prop(const MCP_PROPERTY_LIST_T *properties, const char *name)
 {
@@ -176,6 +180,116 @@ static OPERATE_RET __pet_calendar_add_event_cb(const MCP_PROPERTY_LIST_T *proper
 
     page_mgr_goto(PAGE_IDX_CALENDAR);
     ui_popup_toast(bmo_tr(BMO_STR_TOAST_EVENT_ADDED));
+    return OPRT_OK;
+}
+
+/**
+ * Resolve day_offset (0..3) to local mon/mday. Matches the Feishu sync window.
+ * @return false if the clock is not synced.
+ */
+static bool __cal_ymd_for_offset(int day_offset, int *mon, int *mday)
+{
+    POSIX_TM_S tm;
+    TIME_T local;
+    int tz_sec = 0;
+
+    if (OPRT_OK != tal_time_check_time_sync()) {
+        return false;
+    }
+    tal_time_get_time_zone_seconds(&tz_sec);
+    local = tal_time_get_posix() + (TIME_T)tz_sec + (TIME_T)day_offset * 86400;
+    tal_time_get_local_time_custom(local - (TIME_T)tz_sec, &tm);
+    if (mon) {
+        *mon = tm.tm_mon + 1;
+    }
+    if (mday) {
+        *mday = tm.tm_mday;
+    }
+    return true;
+}
+
+static OPERATE_RET __pet_calendar_get_events_cb(const MCP_PROPERTY_LIST_T *properties,
+                                                MCP_RETURN_VALUE_T *ret_val,
+                                                void *user_data)
+{
+    FEISHU_CAL_DATA_T data;
+    int day_offset, filter_mon = 0, filter_mday = 0;
+    char buf[CAL_MCP_BUF_SIZE];
+    int used = 0;
+    int n = 0;
+    bool filter_day;
+
+    (void)user_data;
+
+    day_offset = __mcp_get_int_prop(properties, "day_offset", -1);
+    if (day_offset < -1 || day_offset >= CAL_MCP_WINDOW_DAYS) {
+        ai_mcp_return_value_set_str(ret_val,
+                                    "day_offset must be -1 (all next 4 days) or 0..3 "
+                                    "(0 today, 1 tomorrow, ...)");
+        return OPRT_OK;
+    }
+
+    filter_day = (day_offset >= 0);
+    if (filter_day && !__cal_ymd_for_offset(day_offset, &filter_mon, &filter_mday)) {
+        ai_mcp_return_value_set_str(ret_val,
+                                    "device clock not synced yet; ask the user to wait a moment");
+        return OPRT_OK;
+    }
+
+    if (!ui_bg_task_copy_calendar(&data)) {
+        ui_bg_task_request_refresh();
+        ai_mcp_return_value_set_str(ret_val,
+                                    "calendar not synced yet; ask the user to wait, or open the "
+                                    "calendar page and press the green refresh key");
+        return OPRT_OK;
+    }
+
+    if (filter_day) {
+        used = snprintf(buf, sizeof(buf), "Schedule for %d/%d:\n", filter_mon, filter_mday);
+    } else {
+        used = snprintf(buf, sizeof(buf), "Schedule (next %d days):\n", CAL_MCP_WINDOW_DAYS);
+    }
+
+    for (int i = 0; i < data.count; i++) {
+        const FEISHU_CAL_EVENT_T *ev = &data.events[i];
+        int wrote;
+
+        if (filter_day) {
+            if (ev->mday == 0) {
+                /* Unparseable date — only show when asking for today. */
+                if (day_offset != 0) {
+                    continue;
+                }
+            } else if (ev->mday != filter_mday || ev->mon != filter_mon) {
+                continue;
+            }
+        }
+
+        n++;
+        if (ev->mday) {
+            wrote = snprintf(buf + used, sizeof(buf) - (size_t)used, "%d. %02d-%02d %s %s\n", n,
+                             ev->mon, ev->mday, ev->time_str, ev->title);
+        } else {
+            wrote = snprintf(buf + used, sizeof(buf) - (size_t)used, "%d. %s %s\n", n, ev->time_str,
+                             ev->title);
+        }
+        if (wrote <= 0 || used + wrote >= (int)sizeof(buf)) {
+            break;
+        }
+        used += wrote;
+    }
+
+    if (n == 0) {
+        if (filter_day) {
+            ai_mcp_return_value_set_str(ret_val, "no events that day");
+        } else {
+            ai_mcp_return_value_set_str(ret_val, "no events in the next 4 days");
+        }
+        return OPRT_OK;
+    }
+
+    ai_mcp_return_value_set_str(ret_val, buf);
+    PR_NOTICE("[MCP] pet.calendar.get_events day_offset=%d n=%d", day_offset, n);
     return OPRT_OK;
 }
 
@@ -445,6 +559,24 @@ static OPERATE_RET __ui_mcp_tools_register(void)
         MCP_PROP_INT_RANGE("hour", "Start hour in 24h local time, 0-23.", 0, 23),
         MCP_PROP_INT_DEF_RANGE("minute", "Start minute, 0-59.", 0, 0, 59),
         MCP_PROP_INT_DEF_RANGE("duration_min", "Length in minutes.", 60, 1, 1440)
+    ), err);
+
+    TUYA_CALL_ERR_GOTO(AI_MCP_TOOL_ADD(
+        "pet.calendar.get_events",
+        "Read Feishu calendar events currently cached on the device so you can speak them aloud.\n"
+        "Use when the user asks what is on their schedule today/tomorrow, what meetings they have, "
+        "or to summarize the next few days.\n"
+        "Optionally call pet.screen.show_page with page=calendar first so they can follow on screen.\n"
+        "Parameters:\n"
+        "- day_offset (int, optional): -1 = all events in the synced window (today + next 3 days, "
+        "default); 0 = today only; 1 = tomorrow; 2 or 3 = the days after.\n"
+        "Response: a short numbered list of date, time and title. Speak at most three aloud unless "
+        "asked for more. If empty, say there is nothing scheduled. Do NOT invent events.",
+        __pet_calendar_get_events_cb,
+        NULL,
+        MCP_PROP_INT_DEF_RANGE("day_offset",
+                               "Filter: -1 all next 4 days (default), 0 today, 1 tomorrow, 2/3 later.",
+                               -1, -1, 3)
     ), err);
 
     TUYA_CALL_ERR_GOTO(AI_MCP_TOOL_ADD(

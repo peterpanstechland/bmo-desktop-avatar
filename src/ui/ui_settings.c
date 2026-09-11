@@ -19,7 +19,7 @@
 #include <string.h>
 
 #ifndef PROJECT_VERSION
-#define PROJECT_VERSION "1.0.0"
+#define PROJECT_VERSION "1.0.2"
 #endif
 
 #define SET_ROWS   4

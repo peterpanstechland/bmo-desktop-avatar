@@ -59,7 +59,7 @@ tuya_iot_client_t ai_client;
 tuya_iot_license_t license;
 
 #ifndef PROJECT_VERSION
-#define PROJECT_VERSION "1.0.0"
+#define PROJECT_VERSION "1.0.2"
 #endif
 
 #define DPID_VOLUME 3

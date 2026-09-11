@@ -317,3 +317,12 @@ bool ui_bg_task_copy_rss(RSS_FEED_DATA_T *out)
     memcpy(out, sg_rss_cache, sizeof(*out));
     return sg_rss_cache->valid && sg_rss_cache->count > 0;
 }
+
+bool ui_bg_task_copy_calendar(FEISHU_CAL_DATA_T *out)
+{
+    if (!out) {
+        return false;
+    }
+    *out = sg_calendar_cache;
+    return sg_calendar_cache.valid;
+}

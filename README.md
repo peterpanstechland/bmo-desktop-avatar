@@ -57,7 +57,7 @@ Or copy the folder contents directly to `TuyaOpen/apps/tuya.ai/desktop_avatar/`.
 
 ### 3. Apply the SDK patches
 
-All four patches touch the SDK rather than this app, so they need reapplying after an SDK reinstall:
+All five patches touch the SDK rather than this app, so they need reapplying after an SDK reinstall:
 
 ```bash
 cd TuyaOpen
@@ -65,12 +65,14 @@ git apply /path/to/bmo-desktop-avatar/patches/st7305_t5ai_core_panel.patch
 git apply /path/to/bmo-desktop-avatar/patches/lv_port_disp_landscape_180.patch
 git apply /path/to/bmo-desktop-avatar/patches/ai_chat_button_long_press.patch
 git apply /path/to/bmo-desktop-avatar/patches/tdl_button_double_click.patch
+git apply /path/to/bmo-desktop-avatar/patches/board_chat_button_p12.patch
 ```
 
 - `st7305_t5ai_core_panel.patch` — **required, the firmware crash-loops without it.** Stock `TUYA_T5AI_CORE` registers no display at all, so `lv_scr_act()` returns NULL and the first LVGL style call faults on a null pointer. The patch registers the panel on the board, loads the Waveshare 4.2" init sequence, and fixes three upstream bugs that only bite on a width that is not a multiple of 8: row stride in the ST7305 conversion and in `tdl_display_draw.c`, plus a 100 ms SPI send timeout that truncates a 15 KB frame. See [docs/st7305-wiring.md](./docs/st7305-wiring.md).
 - `lv_port_disp_landscape_180.patch` — flips the software coordinate map 180° in `src/liblvgl/v9/port/lv_port_disp_full_frame.c` to match this enclosure. If your panel is mounted the other way, skip it or revert to `px = 299 - ly; py = lx;`.
 - `ai_chat_button_long_press.patch` — raises the talk button's long-press threshold from 400 ms to 700 ms. Below that a normal press registers as push-to-talk and single/double click never fire.
 - `tdl_button_double_click.patch` — fixes a missing counter reset in the `tdl_button` state machine. Without it `TDL_BUTTON_PRESS_DOUBLE_CLICK` never fires for any button, so double-click mode switching does nothing. See [docs/bmo-pins.md](./docs/bmo-pins.md) for the analysis.
+- `board_chat_button_p12.patch` — stock Core registers `ai_chat_button` on onboard P29; the BMO panel red circle is on P12 (active-high). Without this patch the red talk key does nothing.
 
 ### 4. Configure credentials
 
